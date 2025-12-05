@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Home, TrendingUp, Wallet, Settings, Menu, X, Zap, ArrowDownUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,6 +9,8 @@ import { useWallet } from '@solana/wallet-adapter-react'
 import { Card } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
+import { LineChart, Line, XAxis, YAxis, CartesianGrid } from "recharts"
 
 interface Market {
   id: string
@@ -38,7 +40,7 @@ interface Position {
 export default function PolyLeverage() {
   const { publicKey, connected } = useWallet()
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [currentPage, setCurrentPage] = useState<"dashboard" | "markets" | "portfolio" | "settings">("dashboard")
+  const [currentPage, setCurrentPage] = useState<"dashboard" | "markets" | "portfolio" | "settings">("markets")
   const [selectedMarket, setSelectedMarket] = useState<Market | null>(null)
   const [polymarketUrl, setPolymarketUrl] = useState("")
   const [selectedTab, setSelectedTab] = useState<"long" | "short">("long")
@@ -54,7 +56,77 @@ export default function PolyLeverage() {
   const [depositAmount, setDepositAmount] = useState("")
   const [bridging, setBridging] = useState(false)
   const [bridgeQuote, setBridgeQuote] = useState<any>(null)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [walletBalance, setWalletBalance] = useState(0)
+  const [pnlTimeframe, setPnlTimeframe] = useState<"24h" | "7d" | "30d">("24h")
+  const [dateJoined] = useState(() => {
+    // Generate a random join date between 30-365 days ago
+    const daysAgo = Math.floor(Math.random() * 335) + 30
+    const date = new Date()
+    date.setDate(date.getDate() - daysAgo)
+    return date
+  })
   const { toast } = useToast()
+
+  // Deterministic PnL data generation using a seed
+  const generatePnLData = (timeframe: "24h" | "7d" | "30d") => {
+    const dataPoints = timeframe === "24h" ? 24 : timeframe === "7d" ? 7 : 30
+    const data = []
+    const now = new Date()
+    
+    // Use a seed based on timeframe for deterministic generation
+    const seed = timeframe === "24h" ? 12345 : timeframe === "7d" ? 67890 : 11111
+    
+    // Simple seeded random function
+    let seedValue = seed
+    const seededRandom = () => {
+      seedValue = (seedValue * 9301 + 49297) % 233280
+      return seedValue / 233280
+    }
+    
+    // Generate deterministic PnL values
+    let basePnl = timeframe === "24h" ? 20 : timeframe === "7d" ? 50 : 100
+    
+    for (let i = 0; i < dataPoints; i++) {
+      // Generate realistic PnL data with deterministic volatility
+      const variation = (seededRandom() - 0.5) * 200
+      basePnl += variation
+      const pnl = Math.max(-500, Math.min(1500, basePnl))
+      
+      let timeLabel = ""
+      let date = new Date()
+      
+      if (timeframe === "24h") {
+        // Show hours from 24 hours ago to now
+        date.setHours(now.getHours() - (dataPoints - 1 - i))
+        const hours = date.getHours()
+        const minutes = date.getMinutes()
+        timeLabel = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+      } else if (timeframe === "7d") {
+        // Show dates from 7 days ago to today
+        date.setDate(now.getDate() - (dataPoints - 1 - i))
+        const month = date.getMonth() + 1
+        const day = date.getDate()
+        timeLabel = `${month}/${day}`
+      } else {
+        // Show dates from 30 days ago to today
+        date.setDate(now.getDate() - (dataPoints - 1 - i))
+        const month = date.getMonth() + 1
+        const day = date.getDate()
+        timeLabel = `${month}/${day}`
+      }
+      
+      data.push({
+        time: timeLabel,
+        pnl: Math.round(pnl),
+      })
+    }
+    
+    return data
+  }
+
+  // Memoize PnL data to prevent regeneration on re-render
+  const pnlData = useMemo(() => generatePnLData(pnlTimeframe), [pnlTimeframe])
 
   const handleAnalyzeMarket = async () => {
     if (!polymarketUrl.trim()) {
@@ -177,13 +249,16 @@ export default function PolyLeverage() {
 
   const fetchUserPositions = async () => {
     if (!publicKey) return
-    
+
     setLoadingPositions(true)
     try {
       const response = await fetch(`/api/polymarket/positions?address=${publicKey.toString()}`)
       if (response.ok) {
         const data = await response.json()
         setUserPositions(data.positions || [])
+        // Calculate total wallet balance from positions (mock for now)
+        const totalBalance = data.positions?.reduce((sum: number, pos: any) => sum + (parseFloat(pos.size) || 0), 0) || 0
+        setWalletBalance(totalBalance + 1250.50) // Base balance + positions
       } else {
         console.error('Failed to fetch positions')
       }
@@ -333,7 +408,9 @@ export default function PolyLeverage() {
               {currentPage === "settings" && "Settings"}
             </h2>
           </div>
-          <WalletMultiButton />
+          <div className="wallet-button-wrapper">
+            <WalletMultiButton>{!connected ? "Connect Wallet" : undefined}</WalletMultiButton>
+          </div>
         </div>
 
         {/* Content Area */}
@@ -570,15 +647,22 @@ export default function PolyLeverage() {
 
           {currentPage === "markets" && (
             <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <h3 className="text-2xl font-bold">Recent Markets</h3>
+              <div className="flex items-center gap-4">
+                <div className="relative flex-1">
+                  <Input
+                    placeholder="Search markets..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="bg-card border-zinc-800"
+                  />
+                </div>
                 <Button
                   onClick={fetchMarkets}
                   disabled={loadingMarkets}
                   variant="outline"
-                  size="sm"
+                  size="icon"
                 >
-                  {loadingMarkets ? "Loading..." : "Refresh"}
+                  <ArrowDownUp className="w-4 h-4" />
                 </Button>
               </div>
               {loadingMarkets && markets.length === 0 ? (
@@ -591,35 +675,40 @@ export default function PolyLeverage() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {markets.map((market) => (
-                    <Card
-                      key={market.id}
-                      className="bg-card border-zinc-800 p-4 cursor-pointer hover:border-primary/50 transition-colors"
-                      onClick={() => {
-                        setSelectedMarket(market)
-                        setCurrentPage("dashboard")
-                      }}
-                    >
-                      <p className="font-semibold text-sm mb-3">{market.name}</p>
-                      <div className="space-y-2 text-xs">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Liquidity</span>
-                          <span className="font-mono text-primary">{market.liquidity || 0}</span>
+                  {markets
+                    .filter(market =>
+                      market.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      (market.description && market.description.toLowerCase().includes(searchQuery.toLowerCase()))
+                    )
+                    .map((market) => (
+                      <Card
+                        key={market.id}
+                        className="bg-card border-zinc-800 p-4 cursor-pointer hover:border-primary/50 transition-colors"
+                        onClick={() => {
+                          setSelectedMarket(market)
+                          setCurrentPage("dashboard")
+                        }}
+                      >
+                        <p className="font-semibold text-sm mb-3">{market.name}</p>
+                        <div className="space-y-2 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Liquidity</span>
+                            <span className="font-mono text-primary">{market.liquidity || 0}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Price</span>
+                            <span className="font-mono">${(market.oraclePrice || 0).toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">24h Change</span>
+                            <span className={`font-mono ${(market.change24h || 0) >= 0 ? "text-primary" : "text-secondary"}`}>
+                              {(market.change24h || 0) >= 0 ? "+" : ""}
+                              {(market.change24h || 0).toFixed(2)}%
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Price</span>
-                          <span className="font-mono">${(market.oraclePrice || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">24h Change</span>
-                          <span className={`font-mono ${(market.change24h || 0) >= 0 ? "text-primary" : "text-secondary"}`}>
-                            {(market.change24h || 0) >= 0 ? "+" : ""}
-                            {(market.change24h || 0).toFixed(2)}%
-                          </span>
-                        </div>
-                      </div>
-                    </Card>
-                  ))}
+                      </Card>
+                    ))}
                 </div>
               )}
             </div>
@@ -632,10 +721,106 @@ export default function PolyLeverage() {
                   <Wallet className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
                   <h3 className="text-xl font-bold mb-2">Portfolio</h3>
                   <p className="text-muted-foreground mb-4">Connect your wallet to view your positions</p>
-                  <WalletMultiButton />
+                  <div className="wallet-button-wrapper">
+                    <WalletMultiButton>{!connected ? "Connect Wallet" : undefined}</WalletMultiButton>
+                  </div>
                 </div>
               ) : (
                 <>
+                  {/* Profile and PnL Boxes */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Profile Info Box */}
+                    <Card className="bg-card border-zinc-800 p-6">
+                      <h3 className="text-lg font-bold mb-4">Profile</h3>
+                      <div className="flex items-center gap-4 mb-6">
+                        <div className="w-16 h-16 rounded-full bg-primary flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-mono text-sm break-all mb-2">
+                            {publicKey?.toString()}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Joined {dateJoined.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="pt-4 border-t border-zinc-800">
+                        <p className="text-xs text-muted-foreground mb-1">Wallet Balance</p>
+                        <p className="text-2xl font-bold font-mono">
+                          ${walletBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">USDC</p>
+                      </div>
+                    </Card>
+
+                    {/* PnL Graph Box */}
+                    <Card className="bg-card border-zinc-800 p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-bold">Profit & Loss</h3>
+                        <Tabs value={pnlTimeframe} onValueChange={(v) => setPnlTimeframe(v as "24h" | "7d" | "30d")}>
+                          <TabsList className="bg-accent border-zinc-800">
+                            <TabsTrigger value="24h" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-xs">
+                              24h
+                            </TabsTrigger>
+                            <TabsTrigger value="7d" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-xs">
+                              7d
+                            </TabsTrigger>
+                            <TabsTrigger value="30d" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-xs">
+                              30d
+                            </TabsTrigger>
+                          </TabsList>
+                        </Tabs>
+                      </div>
+                      <div className="h-[200px] w-full overflow-hidden bg-accent/20 rounded-lg p-2">
+                        <ChartContainer
+                          config={{
+                            pnl: {
+                              label: "PnL",
+                              color: "#8b5cf6",
+                            },
+                          }}
+                          className="h-full w-full"
+                        >
+                          <LineChart 
+                            data={pnlData}
+                            margin={{ top: 10, right: 15, bottom: 10, left: 15 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" opacity={0.3} />
+                            <XAxis
+                              dataKey="time"
+                              tick={{ fill: "#e2e8f0", fontSize: 11, fontWeight: 500 }}
+                              tickLine={{ stroke: "#e2e8f0" }}
+                              axisLine={{ stroke: "#e2e8f0", strokeWidth: 1 }}
+                            />
+                            <YAxis
+                              tick={{ fill: "#e2e8f0", fontSize: 11, fontWeight: 500 }}
+                              tickLine={{ stroke: "#e2e8f0" }}
+                              axisLine={{ stroke: "#e2e8f0", strokeWidth: 1 }}
+                              tickFormatter={(value) => `$${value}`}
+                              width={70}
+                            />
+                            <ChartTooltip 
+                              content={<ChartTooltipContent />}
+                              contentStyle={{ 
+                                backgroundColor: "hsl(var(--card))", 
+                                border: "1px solid hsl(var(--border))",
+                                borderRadius: "0.5rem"
+                              }}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="pnl"
+                              stroke="#8b5cf6"
+                              strokeWidth={3}
+                              dot={false}
+                              activeDot={{ r: 5, fill: "#8b5cf6", stroke: "#fff", strokeWidth: 2 }}
+                              connectNulls={true}
+                            />
+                          </LineChart>
+                        </ChartContainer>
+                      </div>
+                    </Card>
+                  </div>
+
                   <Card className="bg-card border-zinc-800 p-6">
                     <h3 className="text-lg font-bold mb-4">Polymarket Positions</h3>
                     {loadingPositions ? (
@@ -674,7 +859,7 @@ export default function PolyLeverage() {
                         </table>
                       </div>
                     )}
-                    <Button 
+                    <Button
                       onClick={fetchUserPositions}
                       disabled={loadingPositions}
                       variant="outline"
@@ -696,11 +881,13 @@ export default function PolyLeverage() {
                   <ArrowDownUp className="w-5 h-5 text-primary" />
                   <h3 className="text-lg font-bold">Bridge SOL to Polygon</h3>
                 </div>
-                
+
                 {!connected ? (
                   <div className="text-center py-8">
                     <p className="text-muted-foreground mb-4">Connect your wallet to bridge assets</p>
-                    <WalletMultiButton />
+                    <div className="wallet-button-wrapper">
+                      <WalletMultiButton>{!connected ? "Connect Wallet" : undefined}</WalletMultiButton>
+                    </div>
                   </div>
                 ) : (
                   <div className="max-w-md space-y-6">
