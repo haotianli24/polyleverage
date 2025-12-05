@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { solanaDepositService } from '@/lib/solana-deposit'
+import { depositStore } from '@/lib/deposit-store'
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,6 +14,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Check if deposit already exists
+    if (depositStore.hasDeposit(signature)) {
+      const existingDeposit = depositStore.getDeposit(signature)
+      return NextResponse.json({
+        success: true,
+        verified: true,
+        amount: existingDeposit!.amount,
+        timestamp: existingDeposit!.timestamp,
+        signature,
+        message: `Deposit of ${existingDeposit!.amount.toFixed(4)} SOL already verified`
+      })
+    }
+
     const isValid = await solanaDepositService.verifyDeposit(signature)
 
     if (!isValid) {
@@ -23,6 +37,15 @@ export async function POST(request: NextRequest) {
     }
 
     const details = await solanaDepositService.getDepositDetails(signature)
+
+    // Store the verified deposit
+    depositStore.addDeposit({
+      userAddress,
+      signature,
+      amount: details.amount,
+      timestamp: details.timestamp,
+      verified: true
+    })
 
     return NextResponse.json({
       success: true,

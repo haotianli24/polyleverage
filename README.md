@@ -27,6 +27,9 @@ npm install
 2. Create `.env.local` file in the project root:
 ```bash
 POLYMARKET_API_KEY=your_api_key_here
+# Optional: Custom Solana RPC endpoint (recommended for production)
+# NEXT_PUBLIC_SOLANA_RPC_URL=https://api.devnet.solana.com
+# For mainnet, use a service like Helius, QuickNode, or Alchemy
 ```
 
 3. Run the development server:

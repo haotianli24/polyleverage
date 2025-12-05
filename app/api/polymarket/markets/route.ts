@@ -89,6 +89,15 @@ export async function GET(request: NextRequest) {
 
         const plvScore = calculatePLVScore(yesPrice, volume, liquidity)
 
+        let clobTokenIds = market.clobTokenIds
+        if (typeof clobTokenIds === 'string') {
+          try {
+            clobTokenIds = JSON.parse(clobTokenIds)
+          } catch (e) {
+            clobTokenIds = []
+          }
+        }
+
         return {
           id: market.id,
           name: market.question,
@@ -97,7 +106,8 @@ export async function GET(request: NextRequest) {
           volume24hr: volume, // Using total volume as 24hr volume approximation
           liquidity: plvScore,
           change24h: (Math.random() - 0.5) * 10,
-          slug: market.marketSlug
+          slug: market.marketSlug,
+          clobTokenIds: clobTokenIds || []
         }
       })
       .sort((a, b) => b.volume - a.volume)

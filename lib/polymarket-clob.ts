@@ -111,7 +111,7 @@ export class PolymarketCLOB {
         nonce: Date.now(),
         expiration: Math.floor(Date.now() / 1000) + 3600,
         maker: userAddress,
-        taker: ethers.constants.AddressZero,
+        taker: '0x0000000000000000000000000000000000000000',
       }
 
       return {

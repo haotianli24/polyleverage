@@ -45,22 +45,45 @@ export async function GET(request: NextRequest) {
 
     const orders = await ordersResponse.json()
 
+    // Separate filled positions and pending orders
     const positions = orders
       .filter((order: any) => order.status === 'MATCHED' || order.status === 'FILLED')
       .map((order: any) => ({
         id: order.id,
+        orderId: order.orderID || order.id,
         market: order.market || 'Unknown',
+        marketId: order.market,
+        tokenId: order.tokenID || order.token_id,
         side: order.side === 'BUY' ? 'long' : 'short',
         size: parseFloat(order.size || '0'),
         price: parseFloat(order.price || '0'),
-        status: 'active',
-        timestamp: order.created_at
+        status: 'filled',
+        timestamp: order.created_at || order.timestamp,
+        filledSize: parseFloat(order.filledSize || order.size || '0')
+      }))
+
+    const pendingOrders = orders
+      .filter((order: any) => order.status === 'OPEN' || order.status === 'PENDING' || order.status === 'PARTIALLY_FILLED')
+      .map((order: any) => ({
+        id: order.id,
+        orderId: order.orderID || order.id,
+        market: order.market || 'Unknown',
+        marketId: order.market,
+        tokenId: order.tokenID || order.token_id,
+        side: order.side === 'BUY' ? 'long' : 'short',
+        size: parseFloat(order.size || '0'),
+        price: parseFloat(order.price || '0'),
+        status: order.status.toLowerCase(),
+        timestamp: order.created_at || order.timestamp,
+        filledSize: parseFloat(order.filledSize || '0')
       }))
 
     return NextResponse.json({
       address,
       positions,
-      totalPositions: positions.length
+      pendingOrders,
+      totalPositions: positions.length,
+      totalPendingOrders: pendingOrders.length
     })
 
   } catch (error) {
