@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
+    "@polymarket/clob-client": "^5.0.0",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",
     "@radix-ui/react-aspect-ratio": "1.1.1",
@@ -47,6 +48,7 @@
     "@wormhole-foundation/sdk": "^4.3.0",
     "@wormhole-foundation/sdk-evm": "^4.3.0",
     "@wormhole-foundation/sdk-solana": "^4.3.0",
+    "@polymarket/clob-client": "^7.5.0",
     "autoprefixer": "^10.4.20",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

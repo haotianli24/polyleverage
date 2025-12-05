@@ -13,6 +13,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid } from "recharts"
 import { useWallet } from '@solana/wallet-adapter-react'
 import { AppLayout } from "@/components/app-layout"
 import { Market, Position } from "@/lib/types"
+import { OrderBook } from "@/components/order-book"
 
 export default function MarketDetailPage() {
   const router = useRouter()
@@ -42,16 +43,27 @@ export default function MarketDetailPage() {
   const [creatingPosition, setCreatingPosition] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
   const [openingPolymarketPosition, setOpeningPolymarketPosition] = useState(false)
+  const [isEvent, setIsEvent] = useState(false)
+  const [submarkets, setSubmarkets] = useState<any[]>([])
+  const [selectedSubmarket, setSelectedSubmarket] = useState<any | null>(null)
 
   // Generate market price history data (deterministic)
   const generateMarketPriceData = useMemo(() => {
     if (!market) return []
+    
+    // Use submarket price if event and submarket is selected
+    const baseYesPrice = isEvent && selectedSubmarket 
+      ? selectedSubmarket.yesPrice 
+      : market.oraclePrice
+    
+    // Use submarket ID for seed if available
+    const targetId = isEvent && selectedSubmarket ? selectedSubmarket.id : market.id
+    
     const data = []
     const now = new Date()
-    const baseYesPrice = market.oraclePrice
     
-    // Use market ID as seed for deterministic generation
-    const seed = market.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+    // Use market/submarket ID as seed for deterministic generation
+    const seed = targetId.split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
     let seedValue = seed
     
     const seededRandom = () => {
@@ -77,7 +89,7 @@ export default function MarketDetailPage() {
     }
     
     return data
-  }, [market])
+  }, [market, isEvent, selectedSubmarket])
 
   useEffect(() => {
     const fetchMarket = async () => {
@@ -87,15 +99,47 @@ export default function MarketDetailPage() {
       }
       setLoading(true)
       try {
-        // Decode the slug if it's URL-encoded (Next.js params are already decoded, but be safe)
         const decodedSlug = decodeURIComponent(slug)
         console.log('Fetching market with slug/ID:', decodedSlug)
         
-        // Try fetching with slug first
-        let response = await fetch(`/api/polymarket/market?slug=${encodeURIComponent(decodedSlug)}`)
+        // First try fetching as an event (multi-outcome market)
+        let response = await fetch(`/api/polymarket/event?slug=${encodeURIComponent(decodedSlug)}`)
+        
+        if (response.ok) {
+          const eventData = await response.json()
+          console.log('Event data received:', { id: eventData.id, name: eventData.name, submarkets: eventData.submarkets?.length })
+          
+          setIsEvent(true)
+          setSubmarkets(eventData.submarkets || [])
+          
+          // Create a summary market object for the event
+          setMarket({
+            id: eventData.id,
+            name: eventData.name,
+            slug: eventData.slug,
+            description: eventData.description,
+            oraclePrice: eventData.avgPrice || 0.5,
+            volume: eventData.volume || 0,
+            liquidity: 0,
+            change24h: 0
+          } as Market)
+          
+          // Select first submarket by default if available
+          if (eventData.submarkets && eventData.submarkets.length > 0) {
+            const firstSubmarket = eventData.submarkets[0]
+            setSelectedSubmarket(firstSubmarket)
+            setMarketLimitPrice((firstSubmarket.yesPrice * 100).toFixed(1))
+            setSelectedPriceOption(firstSubmarket.yesPrice >= 0.5 ? "yes" : "no")
+          }
+          
+          setLoading(false)
+          return
+        }
+        
+        // If not an event, try fetching as a regular market
+        response = await fetch(`/api/polymarket/market?slug=${encodeURIComponent(decodedSlug)}`)
         let usedSlug = true
         
-        // If slug doesn't work (404), try using it as an ID instead
         if (!response.ok && response.status === 404) {
           console.log('Slug not found, trying as ID:', decodedSlug)
           response = await fetch(`/api/polymarket/market?id=${encodeURIComponent(decodedSlug)}`)
@@ -116,13 +160,6 @@ export default function MarketDetailPage() {
             description: errorData.error || `Failed to load market (${response.status})`,
             variant: "destructive",
           })
-          
-          // Only redirect if it's a 404 or other client error, not server errors
-          // Don't redirect immediately - let user see the error
-          if (response.status >= 400 && response.status < 500) {
-            // Don't auto-redirect - let user decide
-            console.log('Not auto-redirecting, letting user see error')
-          }
           return
         }
         
@@ -133,6 +170,7 @@ export default function MarketDetailPage() {
           throw new Error('Invalid market data received')
         }
         
+        setIsEvent(false)
         setMarket(data)
         setMarketLimitPrice((data.oraclePrice * 100).toFixed(1))
         const yesPrice = data.oraclePrice * 100
@@ -145,7 +183,6 @@ export default function MarketDetailPage() {
           description: error instanceof Error ? error.message : "Failed to load market",
           variant: "destructive",
         })
-        // Don't redirect on network errors, let user retry
       } finally {
         setLoading(false)
       }
@@ -345,9 +382,17 @@ export default function MarketDetailPage() {
               <ChevronLeft className="w-5 h-5" />
             </Button>
             <div>
-              <h2 className="text-xl font-bold">{market.name}</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold">{market.name}</h2>
+                {isEvent && (
+                  <span className="px-2 py-0.5 bg-primary/20 text-primary text-xs rounded-full">
+                    Multi-Outcome Event
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-muted-foreground">
                 ${(market.volume || 0).toLocaleString()} Vol.
+                {isEvent && ` • ${submarkets.length} outcomes`}
               </p>
             </div>
           </div>
@@ -361,20 +406,85 @@ export default function MarketDetailPage() {
           </div>
         </div>
 
+        {/* Submarkets Grid (for events) */}
+        {isEvent && submarkets.length > 0 && (
+          <Card className="bg-card border-zinc-800 p-6">
+            <h3 className="text-lg font-bold mb-4">Outcomes</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {submarkets.map((submarket) => (
+                <Card
+                  key={submarket.id}
+                  className={`bg-accent border-zinc-700 p-4 cursor-pointer hover:border-primary/50 transition-colors ${
+                    selectedSubmarket?.id === submarket.id ? 'border-primary' : ''
+                  }`}
+                  onClick={() => {
+                    setSelectedSubmarket(submarket)
+                    setMarketLimitPrice((submarket.yesPrice * 100).toFixed(1))
+                    setSelectedPriceOption(submarket.yesPrice >= 0.5 ? "yes" : "no")
+                  }}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <p className="font-semibold text-sm flex-1">{submarket.name}</p>
+                    {selectedSubmarket?.id === submarket.id && (
+                      <span className="ml-2 w-2 h-2 rounded-full bg-primary flex-shrink-0 mt-1"></span>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">Yes</span>
+                      <span className="text-sm font-mono text-primary">
+                        {(submarket.yesPrice * 100).toFixed(0)}¢
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">No</span>
+                      <span className="text-sm font-mono text-secondary">
+                        {(submarket.noPrice * 100).toFixed(0)}¢
+                      </span>
+                    </div>
+                    <div className="pt-2 border-t border-zinc-700">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">Volume</span>
+                        <span className="text-xs font-mono">
+                          ${submarket.volume.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </Card>
+        )}
+
         {/* Main Content: Graph + Trading Panel */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left: Graph */}
           <div className="lg:col-span-2">
             <Card className="bg-card border-zinc-800 p-6">
               <div className="mb-4">
+                {isEvent && selectedSubmarket && (
+                  <div className="mb-3 p-2 bg-accent border border-zinc-700 rounded text-xs">
+                    <span className="text-muted-foreground">Showing: </span>
+                    <span className="font-semibold">{selectedSubmarket.name}</span>
+                  </div>
+                )}
                 <div className="flex items-center gap-4 mb-4">
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full bg-primary"></div>
-                    <span className="text-sm">Yes {(market.oraclePrice * 100).toFixed(1)}%</span>
+                    <span className="text-sm">
+                      Yes {isEvent && selectedSubmarket 
+                        ? (selectedSubmarket.yesPrice * 100).toFixed(1)
+                        : (market.oraclePrice * 100).toFixed(1)}%
+                    </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full bg-secondary"></div>
-                    <span className="text-sm">No {((1 - market.oraclePrice) * 100).toFixed(1)}%</span>
+                    <span className="text-sm">
+                      No {isEvent && selectedSubmarket 
+                        ? (selectedSubmarket.noPrice * 100).toFixed(1)
+                        : ((1 - market.oraclePrice) * 100).toFixed(1)}%
+                    </span>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -395,7 +505,7 @@ export default function MarketDetailPage() {
                   config={{
                     yes: {
                       label: "Yes",
-                      color: "#8b5cf6",
+                      color: "#22c55e",
                     },
                     no: {
                       label: "No",
@@ -434,7 +544,7 @@ export default function MarketDetailPage() {
                     <Line
                       type="monotone"
                       dataKey="yes"
-                      stroke="#8b5cf6"
+                      stroke="#22c55e"
                       strokeWidth={2}
                       dot={false}
                     />
@@ -449,6 +559,41 @@ export default function MarketDetailPage() {
                 </ChartContainer>
               </div>
             </Card>
+
+            {/* Order Book */}
+            {(() => {
+              const targetMarket = isEvent && selectedSubmarket ? selectedSubmarket : market
+              const tokenIds = targetMarket?.clobTokenIds
+              
+              if (!tokenIds || tokenIds.length < 2) {
+                return null
+              }
+              
+              // Determine which outcome and token to show
+              const outcome = selectedPriceOption === "no" ? "NO" : "YES"
+              const tokenId = selectedPriceOption === "no" ? tokenIds[1] : tokenIds[0]
+              
+              // Get current price for the selected outcome
+              const currentPrice = isEvent && selectedSubmarket
+                ? (selectedPriceOption === "no" ? selectedSubmarket.noPrice : selectedSubmarket.yesPrice)
+                : (selectedPriceOption === "no" ? (1 - market.oraclePrice) : market.oraclePrice)
+              
+              console.log('Order Book Config:', {
+                outcome,
+                tokenId,
+                currentPrice,
+                tokenIds,
+                selectedPriceOption
+              })
+              
+              return (
+                <OrderBook 
+                  tokenId={tokenId} 
+                  outcome={outcome}
+                  currentPrice={currentPrice}
+                />
+              )
+            })()}
           </div>
 
           {/* Right: Trading Panel */}
@@ -506,6 +651,14 @@ export default function MarketDetailPage() {
                 </div>
               </div>
 
+              {/* Submarket Selection (for events) */}
+              {isEvent && selectedSubmarket && (
+                <div className="mb-4 p-3 bg-accent border border-zinc-800 rounded-lg">
+                  <div className="text-xs text-muted-foreground mb-1">Trading</div>
+                  <div className="font-semibold text-sm">{selectedSubmarket.name}</div>
+                </div>
+              )}
+
               {/* Price Buttons */}
               <div className="space-y-2 mb-4">
                 <Button
@@ -517,11 +670,16 @@ export default function MarketDetailPage() {
                       : "bg-accent hover:bg-accent/80 text-foreground"
                   }`}
                   onClick={() => {
-                    setMarketLimitPrice((market.oraclePrice * 100).toFixed(1))
+                    const price = isEvent && selectedSubmarket 
+                      ? selectedSubmarket.yesPrice 
+                      : market.oraclePrice
+                    setMarketLimitPrice((price * 100).toFixed(1))
                     setSelectedPriceOption("yes")
                   }}
                 >
-                  Yes {(market.oraclePrice * 100).toFixed(1)}¢
+                  Yes {isEvent && selectedSubmarket 
+                    ? (selectedSubmarket.yesPrice * 100).toFixed(1)
+                    : (market.oraclePrice * 100).toFixed(1)}¢
                 </Button>
                 <Button
                   className={`w-full h-14 text-lg font-semibold ${
@@ -532,11 +690,16 @@ export default function MarketDetailPage() {
                       : "bg-accent hover:bg-accent/80 text-foreground"
                   }`}
                   onClick={() => {
-                    setMarketLimitPrice(((1 - market.oraclePrice) * 100).toFixed(1))
+                    const price = isEvent && selectedSubmarket 
+                      ? selectedSubmarket.noPrice 
+                      : (1 - market.oraclePrice)
+                    setMarketLimitPrice((price * 100).toFixed(1))
                     setSelectedPriceOption("no")
                   }}
                 >
-                  No {((1 - market.oraclePrice) * 100).toFixed(1)}¢
+                  No {isEvent && selectedSubmarket 
+                    ? (selectedSubmarket.noPrice * 100).toFixed(1)
+                    : ((1 - market.oraclePrice) * 100).toFixed(1)}¢
                 </Button>
               </div>
 
@@ -547,8 +710,15 @@ export default function MarketDetailPage() {
                   <Input
                     type="number"
                     placeholder="0.0"
+                    min="0"
                     value={marketLimitPrice}
-                    onChange={(e) => setMarketLimitPrice(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      // Prevent negative values
+                      if (value === "" || Number.parseFloat(value) >= 0) {
+                        setMarketLimitPrice(value)
+                      }
+                    }}
                     className="bg-accent border-zinc-700 font-mono"
                   />
                   <span className="text-xs text-muted-foreground">¢</span>
@@ -574,8 +744,15 @@ export default function MarketDetailPage() {
                   <Input
                     type="number"
                     placeholder="0"
+                    min="0"
                     value={marketShares}
-                    onChange={(e) => setMarketShares(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      // Prevent negative values
+                      if (value === "" || Number.parseFloat(value) >= 0) {
+                        setMarketShares(value)
+                      }
+                    }}
                     className="bg-accent border-zinc-700 font-mono text-center"
                   />
                   <Button
@@ -591,15 +768,27 @@ export default function MarketDetailPage() {
               {/* Order Summary */}
               <div className="mb-4 p-3 bg-accent border border-zinc-800 rounded-lg space-y-2">
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Total</span>
+                  <span className="text-muted-foreground">Position Size</span>
                   <span className="font-mono">
-                    ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0") * marketLeverage).toFixed(2)}
+                    ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0")).toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Collateral Required</span>
+                  <span className="font-mono">
+                    ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0") / marketLeverage).toFixed(2)}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">To Win</span>
                   <span className="font-mono text-primary">
-                    ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0") * marketLeverage).toFixed(2)}
+                    ${(Number.parseInt(marketShares || "0") * (1 - Number.parseFloat(marketLimitPrice || "0") / 100)).toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Liquidation Price</span>
+                  <span className="font-mono text-red-400">
+                    {(Number.parseFloat(marketLimitPrice || "0") * (1 - 1/marketLeverage)).toFixed(1)}¢
                   </span>
                 </div>
               </div>
@@ -628,14 +817,21 @@ export default function MarketDetailPage() {
                     setCreatingPosition(true)
                     try {
                       const side = marketSide === "buy" ? "long" : "short"
+                      
+                      // Use submarket ID and name if this is an event
+                      const targetMarketId = isEvent && selectedSubmarket ? selectedSubmarket.id : market.id
+                      const targetMarketName = isEvent && selectedSubmarket 
+                        ? `${market.name} - ${selectedSubmarket.name}` 
+                        : market.name
+                      
                       const response = await fetch('/api/positions/create', {
                         method: 'POST',
                         headers: {
                           'Content-Type': 'application/json',
                         },
                         body: JSON.stringify({
-                          marketId: market.id,
-                          marketName: market.name,
+                          marketId: targetMarketId,
+                          marketName: targetMarketName,
                           side,
                           entryPrice: limitPrice,
                           collateral: collateralAmount,
@@ -675,7 +871,8 @@ export default function MarketDetailPage() {
                 </Button>
                 
                 {/* Direct Polymarket Position Button */}
-                {market?.clobTokenIds && market.clobTokenIds.length >= 2 && (
+                {((isEvent && selectedSubmarket?.clobTokenIds && selectedSubmarket.clobTokenIds.length >= 2) || 
+                  (!isEvent && market?.clobTokenIds && market.clobTokenIds.length >= 2)) && (
                   <Button
                     className="w-full h-12 bg-green-600 hover:bg-green-700 text-white font-semibold"
                     disabled={!connected || !marketShares || Number.parseInt(marketShares) <= 0 || openingPolymarketPosition}
@@ -694,7 +891,10 @@ export default function MarketDetailPage() {
                         return
                       }
 
-                      if (!market.clobTokenIds || market.clobTokenIds.length < 2) {
+                      // Use submarket data if this is an event
+                      const targetMarket = isEvent && selectedSubmarket ? selectedSubmarket : market
+                      
+                      if (!targetMarket.clobTokenIds || targetMarket.clobTokenIds.length < 2) {
                         toast({
                           title: "Market Not Available",
                           description: "This market does not support direct Polymarket trading",
@@ -704,13 +904,13 @@ export default function MarketDetailPage() {
                       }
 
                       const tokenId = selectedPriceOption === "yes" 
-                        ? market.clobTokenIds[0] 
-                        : market.clobTokenIds[1]
+                        ? targetMarket.clobTokenIds[0] 
+                        : targetMarket.clobTokenIds[1]
                       
                       const side = selectedPriceOption === "yes" ? "YES" : "NO"
 
                       await handleOpenPolymarketPosition(
-                        market.id,
+                        targetMarket.id,
                         tokenId,
                         side as "YES" | "NO",
                         shares,

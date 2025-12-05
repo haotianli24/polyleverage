@@ -8,7 +8,7 @@
 const { Connection, PublicKey } = require('@solana/web3.js')
 
 const DEPOSIT_ADDRESS = 'CXi538rhqgJx56Edrqg1HMmZK4xfKgTDz7r2df4CnJQL'
-const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
+const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'
 
 async function checkBalance() {
   try {

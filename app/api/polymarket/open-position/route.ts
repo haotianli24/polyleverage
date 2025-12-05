@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { polymarketCLOB } from '@/lib/polymarket-clob'
+import { createUserCLOBClient } from '@/lib/polymarket-clob'
+import { getCredentials } from '@/lib/polymarket-credentials'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -39,15 +40,30 @@ export async function POST(request: NextRequest) {
 
     const clobSide = side === 'YES' ? 'BUY' : 'SELL'
 
+    // Check if user has linked their Polymarket account
+    const credentials = getCredentials(userAddress)
+    if (!credentials) {
+      return NextResponse.json(
+        { 
+          error: 'Polymarket account not linked',
+          message: 'Please link your Polymarket account in the Portfolio page to place orders'
+        },
+        { status: 403 }
+      )
+    }
+
+    // Create user-specific CLOB client
+    const userCLOB = createUserCLOBClient(userAddress)
+
     let orderPrice = price
     if (!orderPrice || orderPrice <= 0) {
-      orderPrice = await polymarketCLOB.getBestPrice(tokenId, clobSide)
+      orderPrice = await userCLOB.getBestPrice(tokenId, clobSide)
     }
 
     const totalCost = amount * orderPrice
 
-    const result = await polymarketCLOB.createOrder({
-      userAddress,
+    // Use authenticated order creation
+    const result = await userCLOB.createAuthenticatedOrder({
       market: marketId,
       tokenId,
       side: clobSide,

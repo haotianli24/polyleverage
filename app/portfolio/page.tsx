@@ -14,6 +14,7 @@ import { Transaction, SystemProgram, LAMPORTS_PER_SOL, PublicKey } from '@solana
 import WalletMultiButton from '@/components/wallet-button'
 import { AppLayout } from "@/components/app-layout"
 import { Position } from "@/lib/types"
+import { PolymarketLinkDialog } from "@/components/polymarket-link-dialog"
 
 // Central deposit address - SOL deposits are sent to this address
 const DEPOSIT_ADDRESS_STRING = "CXi538rhqgJx56Edrqg1HMmZK4xfKgTDz7r2df4CnJQL"
@@ -589,14 +590,17 @@ export default function PortfolioPage() {
                       </p>
                     )}
                   </div>
-                  {polymarketAddress && (
-                    <div>
-                      <p className="text-xs text-muted-foreground mb-1">Polymarket Address</p>
-                      <p className="font-mono text-sm break-all">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs text-muted-foreground">Polymarket Account</p>
+                      <PolymarketLinkDialog />
+                    </div>
+                    {polymarketAddress && (
+                      <p className="font-mono text-xs break-all text-muted-foreground">
                         {polymarketAddress}
                       </p>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               </Card>
 

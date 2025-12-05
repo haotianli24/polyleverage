@@ -9,6 +9,43 @@ import { Card } from "@/components/ui/card"
 import { AppLayout } from "@/components/app-layout"
 import { Market } from "@/lib/types"
 
+// Hardcoded featured markets (multi-outcome events)
+const FEATURED_MARKETS = [
+  {
+    id: 'gta-vi-events',
+    name: 'What will happen before GTA VI?',
+    slug: 'what-will-happen-before-gta-vi',
+    oraclePrice: 0.49,
+    volume: 12147911,
+    liquidity: 95,
+    change24h: 2.4,
+    isEvent: true,
+    description: 'Multiple event outcomes before GTA VI release'
+  },
+  {
+    id: 'trump-epstein-files',
+    name: 'Will Trump release Epstein files by...?',
+    slug: 'will-trump-release-epstein-files-by',
+    oraclePrice: 0.66,
+    volume: 3093522,
+    liquidity: 88,
+    change24h: 5.2,
+    isEvent: true,
+    description: 'Multiple deadline outcomes for Epstein files release'
+  },
+  {
+    id: 'trump-kennedy-center',
+    name: 'What will Trump say during Kennedy Center Honors on December 7?',
+    slug: 'what-will-trump-say-during-kennedy-center-honors-on-december-7',
+    oraclePrice: 0.52,
+    volume: 18328,
+    liquidity: 72,
+    change24h: -1.3,
+    isEvent: true,
+    description: 'Multiple word/phrase mentions during the event'
+  }
+]
+
 export default function MarketsPage() {
   const router = useRouter()
   const [markets, setMarkets] = useState<Market[]>([])
@@ -33,7 +70,8 @@ export default function MarketsPage() {
   }
 
   useEffect(() => {
-    fetchMarkets()
+    // Use featured markets instead of fetching
+    setMarkets(FEATURED_MARKETS as Market[])
   }, [])
 
   const fetchMarketInfo = async (marketId: string, slug?: string) => {
@@ -80,20 +118,8 @@ export default function MarketsPage() {
               className="bg-card border-zinc-800"
             />
           </div>
-          <Button
-            onClick={fetchMarkets}
-            disabled={loadingMarkets}
-            variant="outline"
-            size="icon"
-          >
-            <ArrowDownUp className="w-4 h-4" />
-          </Button>
         </div>
-        {loadingMarkets && markets.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-muted-foreground">Loading markets...</p>
-          </div>
-        ) : markets.length === 0 ? (
+        {markets.length === 0 ? (
           <div className="text-center py-12">
             <p className="text-muted-foreground">No markets available</p>
           </div>
@@ -110,15 +136,22 @@ export default function MarketsPage() {
                   className="bg-card border-zinc-800 p-4 cursor-pointer hover:border-primary/50 transition-colors"
                   onClick={() => handleMarketClick(market)}
                 >
-                  <p className="font-semibold text-sm mb-3">{market.name}</p>
+                  <div className="mb-2">
+                    <p className="font-semibold text-sm mb-1">{market.name}</p>
+                    {(market as any).isEvent && (
+                      <span className="inline-block px-2 py-0.5 bg-primary/20 text-primary text-xs rounded-full">
+                        Multi-Outcome Event
+                      </span>
+                    )}
+                  </div>
                   <div className="space-y-2 text-xs">
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Liquidity</span>
-                      <span className="font-mono text-primary">{market.liquidity || 0}</span>
+                      <span className="text-muted-foreground">Volume</span>
+                      <span className="font-mono text-primary">${(market.volume || 0).toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Price</span>
-                      <span className="font-mono">${(market.oraclePrice || 0).toFixed(2)}</span>
+                      <span className="text-muted-foreground">Avg Price</span>
+                      <span className="font-mono">{((market.oraclePrice || 0) * 100).toFixed(0)}¢</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">24h Change</span>

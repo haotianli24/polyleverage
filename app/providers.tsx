@@ -14,18 +14,18 @@ import '@solana/wallet-adapter-react-ui/styles.css';
 
 export function Providers({ children }: { children: React.ReactNode }) {
     // The network can be set to 'devnet', 'testnet', or 'mainnet-beta'.
-    // Using devnet to match the deposit service configuration
-    const network = WalletAdapterNetwork.Devnet;
+    // Using mainnet-beta for production
+    const network = WalletAdapterNetwork.Mainnet;
 
     // Use a custom RPC endpoint if provided, otherwise use clusterApiUrl
-    // For devnet, you can use: https://api.devnet.solana.com
-    // For mainnet, consider using a service like Helius, QuickNode, or Alchemy
+    // For mainnet, you should use a service like Helius, QuickNode, or Alchemy for better reliability
+    // Set NEXT_PUBLIC_SOLANA_RPC_URL in your .env.local file
     const endpoint = useMemo(() => {
         // Check for custom RPC endpoint in environment variable
         if (process.env.NEXT_PUBLIC_SOLANA_RPC_URL) {
             return process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
         }
-        // Use devnet by default to match deposit service
+        // Use mainnet-beta by default
         return clusterApiUrl(network);
     }, [network]);
 
