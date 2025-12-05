@@ -2,6 +2,9 @@
 /node_modules
 /.pnp
 .pnp.js
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
 
 # testing
 /coverage
@@ -24,6 +27,7 @@ ts-debug.log*
 
 # local env files
 .env*.local
+.env
 
 # vercel
 .vercel
@@ -31,3 +35,14 @@ ts-debug.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

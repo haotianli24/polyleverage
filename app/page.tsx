@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Home, TrendingUp, Wallet, Settings, Menu, X, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,6 +14,10 @@ interface Market {
   liquidity: number
   oraclePrice: number
   change24h: number
+  slug?: string
+  volume?: number
+  description?: string
+  plvScore?: number
 }
 
 interface Position {
@@ -28,11 +32,6 @@ interface Position {
   status: "active" | "liquidated"
 }
 
-const MOCK_MARKETS: Market[] = [
-  { id: "1", name: "Trump vs Harris 2024", liquidity: 98, oraclePrice: 0.55, change24h: 2.5 },
-  { id: "2", name: "Fed Rates Q1 2025", liquidity: 92, oraclePrice: 0.42, change24h: -1.2 },
-  { id: "3", name: "Bitcoin Above 50k", liquidity: 88, oraclePrice: 0.78, change24h: 5.3 },
-]
 
 export default function PolyLeverage() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -44,9 +43,12 @@ export default function PolyLeverage() {
   const [leverage, setLeverage] = useState(2)
   const [oraclePrice, setOraclePrice] = useState(0.5)
   const [positions, setPositions] = useState<Position[]>([])
+  const [markets, setMarkets] = useState<Market[]>([])
+  const [loadingMarkets, setLoadingMarkets] = useState(false)
+  const [analyzingMarket, setAnalyzingMarket] = useState(false)
   const { toast } = useToast()
 
-  const handleAnalyzeMarket = () => {
+  const handleAnalyzeMarket = async () => {
     if (!polymarketUrl.trim()) {
       toast({
         title: "Error",
@@ -55,11 +57,51 @@ export default function PolyLeverage() {
       })
       return
     }
-    setSelectedMarket(MOCK_MARKETS[0])
-    toast({
-      title: "Market Analyzed",
-      description: "PLV score calculated. Ready to trade.",
-    })
+
+    setAnalyzingMarket(true)
+
+    try {
+      const parseResponse = await fetch('/api/polymarket/parse-url', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: polymarketUrl }),
+      })
+
+      if (!parseResponse.ok) {
+        const errorData = await parseResponse.json()
+        throw new Error(errorData.error || 'Failed to parse URL')
+      }
+
+      const { slug, type } = await parseResponse.json()
+
+      const marketResponse = await fetch(`/api/polymarket/market?slug=${encodeURIComponent(slug)}&type=${type}`)
+
+      if (!marketResponse.ok) {
+        const errorData = await marketResponse.json()
+        throw new Error(errorData.error || 'Failed to fetch market data')
+      }
+
+      const marketData = await marketResponse.json()
+
+      setSelectedMarket(marketData)
+      setOraclePrice(marketData.oraclePrice || 0.5)
+
+      toast({
+        title: "Market Analyzed",
+        description: `PLV score: ${marketData.plvScore || marketData.liquidity}/100. Ready to trade.`,
+      })
+    } catch (error) {
+      console.error('Error analyzing market:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to analyze market",
+        variant: "destructive",
+      })
+    } finally {
+      setAnalyzingMarket(false)
+    }
   }
 
   const handlePlacePosition = () => {
@@ -90,6 +132,29 @@ export default function PolyLeverage() {
       return ((position.currentPrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage
     }
     return ((position.entryPrice - position.currentPrice) / position.entryPrice) * 100 * position.leverage
+  }
+
+  useEffect(() => {
+    if (currentPage === "markets") {
+      fetchMarkets()
+    }
+  }, [currentPage])
+
+  const fetchMarkets = async () => {
+    setLoadingMarkets(true)
+    try {
+      const response = await fetch('/api/polymarket/markets?limit=6')
+      if (response.ok) {
+        const data = await response.json()
+        setMarkets(data)
+      } else {
+        console.error('Failed to fetch markets')
+      }
+    } catch (error) {
+      console.error('Error fetching markets:', error)
+    } finally {
+      setLoadingMarkets(false)
+    }
   }
 
   const navItems = [
@@ -186,9 +251,10 @@ export default function PolyLeverage() {
                       />
                       <Button
                         onClick={handleAnalyzeMarket}
+                        disabled={analyzingMarket}
                         className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
                       >
-                        Analyze PLV
+                        {analyzingMarket ? "Analyzing..." : "Analyze PLV"}
                       </Button>
                     </div>
                   </div>
@@ -207,14 +273,16 @@ export default function PolyLeverage() {
 
                       <div className="pb-6 border-b border-zinc-800">
                         <div className="bg-primary/10 border border-primary/30 rounded px-3 py-2">
-                          <p className="text-primary font-mono text-sm">PLV: {selectedMarket.liquidity}/100</p>
-                          <p className="text-primary/80 font-mono text-xs">High Liquidity</p>
+                          <p className="text-primary font-mono text-sm">PLV: {selectedMarket.plvScore || selectedMarket.liquidity}/100</p>
+                          <p className="text-primary/80 font-mono text-xs">
+                            {(selectedMarket.plvScore || selectedMarket.liquidity) >= 70 ? 'High' : (selectedMarket.plvScore || selectedMarket.liquidity) >= 40 ? 'Medium' : 'Low'} Liquidity
+                          </p>
                         </div>
                       </div>
 
                       <div className="pb-6 border-b border-zinc-800">
                         <p className="text-xs text-muted-foreground mb-1">Oracle Price</p>
-                        <p className="font-mono text-2xl font-bold">${oraclePrice.toFixed(2)}</p>
+                        <p className="font-mono text-2xl font-bold">${(oraclePrice || 0).toFixed(2)}</p>
                       </div>
 
                       <div>
@@ -385,7 +453,7 @@ export default function PolyLeverage() {
                       onChange={(e) => setOraclePrice(Number.parseFloat(e.target.value))}
                       className="w-full h-2 bg-accent rounded accent-primary"
                     />
-                    <p className="text-xs text-muted-foreground">Original: ${selectedMarket.oraclePrice.toFixed(2)}</p>
+                    <p className="text-xs text-muted-foreground">Original: ${(selectedMarket.oraclePrice || 0.5).toFixed(2)}</p>
                   </div>
                 </Card>
               )}
@@ -394,9 +462,28 @@ export default function PolyLeverage() {
 
           {currentPage === "markets" && (
             <div className="space-y-6">
-              <h3 className="text-2xl font-bold">Recent Markets</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-2xl font-bold">Recent Markets</h3>
+                <Button 
+                  onClick={fetchMarkets} 
+                  disabled={loadingMarkets}
+                  variant="outline"
+                  size="sm"
+                >
+                  {loadingMarkets ? "Loading..." : "Refresh"}
+                </Button>
+              </div>
+              {loadingMarkets && markets.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground">Loading markets...</p>
+                </div>
+              ) : markets.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground">No markets available</p>
+                </div>
+              ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {MOCK_MARKETS.map((market) => (
+                {markets.map((market) => (
                   <Card
                     key={market.id}
                     className="bg-card border-zinc-800 p-4 cursor-pointer hover:border-primary/50 transition-colors"
@@ -409,23 +496,24 @@ export default function PolyLeverage() {
                     <div className="space-y-2 text-xs">
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Liquidity</span>
-                        <span className="font-mono text-primary">{market.liquidity}</span>
+                        <span className="font-mono text-primary">{market.liquidity || 0}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Price</span>
-                        <span className="font-mono">${market.oraclePrice.toFixed(2)}</span>
+                        <span className="font-mono">${(market.oraclePrice || 0).toFixed(2)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">24h Change</span>
-                        <span className={`font-mono ${market.change24h >= 0 ? "text-primary" : "text-secondary"}`}>
-                          {market.change24h >= 0 ? "+" : ""}
-                          {market.change24h.toFixed(2)}%
+                        <span className={`font-mono ${(market.change24h || 0) >= 0 ? "text-primary" : "text-secondary"}`}>
+                          {(market.change24h || 0) >= 0 ? "+" : ""}
+                          {(market.change24h || 0).toFixed(2)}%
                         </span>
                       </div>
                     </div>
                   </Card>
                 ))}
               </div>
+              )}
             </div>
           )}
 
