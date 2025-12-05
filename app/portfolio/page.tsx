@@ -50,6 +50,7 @@ export default function PortfolioPage() {
   const [walletBalance, setWalletBalance] = useState(0)
   const [depositBalanceUSDC, setDepositBalanceUSDC] = useState(0)
   const [pnlTimeframe, setPnlTimeframe] = useState<"24h" | "7d" | "30d">("24h")
+  const [positionsTab, setPositionsTab] = useState<"leveraged" | "polymarket">("leveraged")
   const [dateJoined] = useState(() => {
     const daysAgo = Math.floor(Math.random() * 335) + 30
     const date = new Date()
@@ -118,7 +119,14 @@ export default function PortfolioPage() {
   // Recalculate wallet balance whenever positions or deposits change
   useEffect(() => {
     const polymarketBalance = userPositions.reduce((sum: number, pos: any) => sum + (parseFloat(pos.size) || 0), 0)
-    setWalletBalance(polymarketBalance + depositBalanceUSDC)
+    const totalBalance = polymarketBalance + depositBalanceUSDC
+    console.log('Wallet balance calculation:', {
+      polymarketBalance,
+      depositBalanceUSDC,
+      totalBalance,
+      userPositionsCount: userPositions.length
+    })
+    setWalletBalance(totalBalance)
   }, [userPositions, depositBalanceUSDC])
 
   const fetchLeveragedPositions = async () => {
@@ -202,7 +210,22 @@ export default function PortfolioPage() {
       const response = await fetch(`/api/deposits/user-balance?address=${encodeURIComponent(publicKey.toString())}`)
       if (response.ok) {
         const data = await response.json()
-        setDepositBalanceUSDC(data.totalDepositsUSDC || 0)
+        console.log('Deposit balance fetched:', {
+          totalDepositsSOL: data.totalDepositsSOL,
+          totalDepositsUSDC: data.totalDepositsUSDC,
+          depositCount: data.deposits?.length || 0,
+          deposits: data.deposits,
+          address: data.address
+        })
+        const newBalance = data.totalDepositsUSDC || 0
+        console.log(`Setting depositBalanceUSDC to: ${newBalance} USDC (${data.totalDepositsSOL || 0} SOL)`)
+        setDepositBalanceUSDC(newBalance)
+      } else {
+        const errorData = await response.json().catch(() => ({}))
+        console.error('Failed to fetch deposit balance:', {
+          status: response.status,
+          error: errorData
+        })
       }
     } catch (error) {
       console.error('Error fetching deposit balance:', error)
@@ -423,8 +446,14 @@ export default function PortfolioPage() {
 
         if (response.ok) {
           const data = await response.json()
+          console.log('Verification response:', data)
           if (data.verified) {
             verified = true
+            console.log('Deposit verified successfully:', {
+              signature,
+              amount: data.amount,
+              userAddress: publicKey.toString()
+            })
             toast({
               title: "Deposit Verified",
               description: data.message || `Deposit of ${data.amount?.toFixed(4) || '0'} SOL confirmed`,
@@ -432,9 +461,25 @@ export default function PortfolioPage() {
             setDepositAmount('')
             setDepositSignature(null)
             await fetchSolBalance()
+            // Wait a bit for the deposit to be stored, then refresh
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            console.log('Refreshing deposit balance after verification...')
             await fetchDepositBalance() // Refresh deposit balance after verification
             break
+          } else {
+            console.log('Deposit not yet verified, response:', data)
           }
+        } else {
+          const errorData = await response.json().catch(() => ({}))
+          console.error('Deposit verification failed:', {
+            status: response.status,
+            error: errorData
+          })
+          toast({
+            title: "Verification Failed",
+            description: errorData.error || `Failed to verify deposit (${response.status})`,
+            variant: "destructive",
+          })
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000))
@@ -514,11 +559,35 @@ export default function PortfolioPage() {
                 </div>
                 <div className="pt-4 border-t border-zinc-800 grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <p className="text-xs text-muted-foreground mb-1">Wallet Balance</p>
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs text-muted-foreground">Wallet Balance</p>
+                      <Button
+                        onClick={async () => {
+                          await fetchDepositBalance()
+                          await fetchUserPositions()
+                          toast({
+                            title: "Balance Refreshed",
+                            description: `Deposits: ${(depositBalanceUSDC / 150).toFixed(4)} SOL`,
+                          })
+                        }}
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                      >
+                        Refresh
+                      </Button>
+                    </div>
                     <p className="text-2xl font-bold font-mono">
                       ${walletBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-1">USDC</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      USDC {depositBalanceUSDC > 0 && `(${(depositBalanceUSDC / 150).toFixed(4)} SOL deposited)`}
+                    </p>
+                    {depositBalanceUSDC === 0 && (
+                      <p className="text-xs text-yellow-500 mt-1">
+                        No deposits found. If you deposited, verify the transaction.
+                      </p>
+                    )}
                   </div>
                   {polymarketAddress && (
                     <div>
@@ -528,108 +597,6 @@ export default function PortfolioPage() {
                       </p>
                     </div>
                   )}
-                </div>
-              </Card>
-
-              {/* Deposit Box */}
-              <Card className="bg-card border-zinc-800 p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-bold">Deposit SOL</h3>
-                  <Button
-                    onClick={fetchSolBalance}
-                    disabled={loadingBalance}
-                    variant="outline"
-                    size="sm"
-                  >
-                    {loadingBalance ? "Loading..." : "Refresh"}
-                  </Button>
-                </div>
-                
-                <div className="space-y-4">
-                  <div className="p-4 bg-accent border border-zinc-800 rounded-lg">
-                    <p className="text-xs text-muted-foreground mb-1">Available Balance</p>
-                    <p className="text-2xl font-bold font-mono">
-                      {loadingBalance ? (
-                        <span className="text-muted-foreground">Loading...</span>
-                      ) : solBalance !== null ? (
-                        `${solBalance.toFixed(4)} SOL`
-                      ) : (
-                        <span className="text-muted-foreground">--</span>
-                      )}
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-2 block">Deposit Amount (SOL)</label>
-                    <Input
-                      type="number"
-                      placeholder="0.0"
-                      value={depositAmount}
-                      onChange={(e) => setDepositAmount(e.target.value)}
-                      className="bg-accent border-zinc-700 font-mono"
-                      disabled={depositing || verifyingDeposit}
-                    />
-                    {solBalance !== null && (
-                      <div className="flex gap-2 mt-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setDepositAmount((solBalance * 0.25).toFixed(4))}
-                          disabled={depositing || verifyingDeposit}
-                          className="text-xs"
-                        >
-                          25%
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setDepositAmount((solBalance * 0.5).toFixed(4))}
-                          disabled={depositing || verifyingDeposit}
-                          className="text-xs"
-                        >
-                          50%
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setDepositAmount((solBalance * 0.75).toFixed(4))}
-                          disabled={depositing || verifyingDeposit}
-                          className="text-xs"
-                        >
-                          75%
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setDepositAmount(solBalance.toFixed(4))}
-                          disabled={depositing || verifyingDeposit}
-                          className="text-xs"
-                        >
-                          Max
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-
-                  {depositSignature && (
-                    <div className="p-3 bg-primary/10 border border-primary/30 rounded-lg">
-                      <p className="text-xs text-muted-foreground mb-1">Transaction Signature</p>
-                      <p className="font-mono text-xs break-all text-primary">
-                        {depositSignature}
-                      </p>
-                      {verifyingDeposit && (
-                        <p className="text-xs text-muted-foreground mt-2">Verifying deposit...</p>
-                      )}
-                    </div>
-                  )}
-
-                  <Button
-                    onClick={handleDeposit}
-                    disabled={depositing || verifyingDeposit || !depositAmount || parseFloat(depositAmount) <= 0}
-                    className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
-                  >
-                    {depositing ? "Creating Transaction..." : verifyingDeposit ? "Verifying..." : "Deposit SOL"}
-                  </Button>
                 </div>
               </Card>
 
@@ -702,101 +669,129 @@ export default function PortfolioPage() {
               </Card>
             </div>
 
-            {/* Leveraged Positions */}
+            {/* Deposit Box */}
             <Card className="bg-card border-zinc-800 p-6">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold">Leveraged Positions</h3>
+                <h3 className="text-lg font-bold">Deposit SOL</h3>
                 <Button
-                  onClick={fetchLeveragedPositions}
-                  disabled={loadingPositions}
+                  onClick={fetchSolBalance}
+                  disabled={loadingBalance}
                   variant="outline"
                   size="sm"
                 >
-                  Refresh
+                  {loadingBalance ? "Loading..." : "Refresh"}
                 </Button>
               </div>
-              {loadingPositions ? (
-                <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
-              ) : positions.length === 0 ? (
-                <p className="text-center py-8 text-muted-foreground">No leveraged positions found</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-zinc-800">
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Current</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Liquidation</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">P&L</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Margin</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Health</th>
-                        <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {positions.map((pos) => {
-                        const pnl = calculatePnL(pos)
-                        const pnlAmount = pos.pnl ?? 0
-                        return (
-                          <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
-                            <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={pos.marketName}>
-                              {pos.marketName}
-                            </td>
-                            <td className="py-4 px-4 font-mono text-sm">
-                              <span className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}>
-                                {pos.side.toUpperCase()}
-                              </span>
-                            </td>
-                            <td className="py-4 px-4 font-mono text-xs">${pos.entryPrice.toFixed(4)}</td>
-                            <td className="py-4 px-4 font-mono text-xs">${pos.currentPrice.toFixed(4)}</td>
-                            <td className="py-4 px-4 font-mono text-xs text-red-400">${pos.liquidationPrice.toFixed(4)}</td>
-                            <td className="py-4 px-4 font-mono text-sm">
-                              <div className="flex flex-col">
-                                <span className={pnl >= 0 ? "text-primary" : "text-secondary"}>
-                                  {pnl >= 0 ? "+" : ""}
-                                  {pnl.toFixed(2)}%
-                                </span>
-                                <span className={`text-xs ${pnlAmount >= 0 ? "text-primary/70" : "text-secondary/70"}`}>
-                                  ${pnlAmount >= 0 ? "+" : ""}{pnlAmount.toFixed(2)}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="py-4 px-4 font-mono text-xs">
-                              {pos.marginRatio !== undefined ? `${pos.marginRatio.toFixed(2)}%` : "N/A"}
-                            </td>
-                            <td className="py-4 px-4">
-                              {getHealthBadge(pos.health)}
-                            </td>
-                            <td className="py-4 px-4">
-                              {pos.status === "active" && (
-                                <Button
-                                  onClick={() => handleClosePosition(pos.id)}
-                                  disabled={closingPositionId === pos.id}
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-xs"
-                                >
-                                  {closingPositionId === pos.id ? "Closing..." : "Close"}
-                                </Button>
-                              )}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+              
+              <div className="space-y-4">
+                <div className="p-4 bg-accent border border-zinc-800 rounded-lg">
+                  <p className="text-xs text-muted-foreground mb-1">Available Balance</p>
+                  <p className="text-2xl font-bold font-mono">
+                    {loadingBalance ? (
+                      <span className="text-muted-foreground">Loading...</span>
+                    ) : solBalance !== null ? (
+                      `${solBalance.toFixed(4)} SOL`
+                    ) : (
+                      <span className="text-muted-foreground">--</span>
+                    )}
+                  </p>
                 </div>
-              )}
+
+                <div>
+                  <label className="text-xs text-muted-foreground mb-2 block">Deposit Amount (SOL)</label>
+                  <Input
+                    type="number"
+                    placeholder="0.0"
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                    className="bg-accent border-zinc-700 font-mono"
+                    disabled={depositing || verifyingDeposit}
+                  />
+                  {solBalance !== null && (
+                    <div className="flex gap-2 mt-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDepositAmount((solBalance * 0.25).toFixed(4))}
+                        disabled={depositing || verifyingDeposit}
+                        className="text-xs"
+                      >
+                        25%
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDepositAmount((solBalance * 0.5).toFixed(4))}
+                        disabled={depositing || verifyingDeposit}
+                        className="text-xs"
+                      >
+                        50%
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDepositAmount((solBalance * 0.75).toFixed(4))}
+                        disabled={depositing || verifyingDeposit}
+                        className="text-xs"
+                      >
+                        75%
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDepositAmount(solBalance.toFixed(4))}
+                        disabled={depositing || verifyingDeposit}
+                        className="text-xs"
+                      >
+                        Max
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {depositSignature && (
+                  <div className="p-3 bg-primary/10 border border-primary/30 rounded-lg">
+                    <p className="text-xs text-muted-foreground mb-1">Transaction Signature</p>
+                    <p className="font-mono text-xs break-all text-primary">
+                      {depositSignature}
+                    </p>
+                    {verifyingDeposit && (
+                      <p className="text-xs text-muted-foreground mt-2">Verifying deposit...</p>
+                    )}
+                  </div>
+                )}
+
+                <Button
+                  onClick={handleDeposit}
+                  disabled={depositing || verifyingDeposit || !depositAmount || parseFloat(depositAmount) <= 0}
+                  className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+                >
+                  {depositing ? "Creating Transaction..." : verifyingDeposit ? "Verifying..." : "Deposit SOL"}
+                </Button>
+              </div>
             </Card>
 
-            {/* Polymarket Positions */}
+            {/* Positions - Combined with Tabs */}
             <Card className="bg-card border-zinc-800 p-6">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold">Polymarket Positions</h3>
+                <Tabs value={positionsTab} onValueChange={(v) => setPositionsTab(v as "leveraged" | "polymarket")}>
+                  <TabsList className="bg-accent border-zinc-800">
+                    <TabsTrigger value="leveraged" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                      Leveraged
+                    </TabsTrigger>
+                    <TabsTrigger value="polymarket" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                      Polymarket
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
                 <Button
-                  onClick={fetchUserPositions}
+                  onClick={() => {
+                    if (positionsTab === "leveraged") {
+                      fetchLeveragedPositions()
+                    } else {
+                      fetchUserPositions()
+                    }
+                  }}
                   disabled={loadingPositions}
                   variant="outline"
                   size="sm"
@@ -805,103 +800,188 @@ export default function PortfolioPage() {
                 </Button>
               </div>
 
-              {/* Pending Orders */}
-              {pendingOrders.length > 0 && (
-                <div className="mb-6">
-                  <h4 className="text-sm font-semibold mb-3 text-yellow-500">Pending Orders ({pendingOrders.length})</h4>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-zinc-800">
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Size</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Price</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Filled</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Status</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pendingOrders.map((order: any) => (
-                          <tr key={order.id} className="border-b border-zinc-800 hover:bg-accent/50">
-                            <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={order.market}>
-                              {order.market}
-                            </td>
-                            <td className="py-4 px-4 font-mono text-sm">
-                              <span className={`font-bold ${order.side === "long" ? "text-primary" : "text-secondary"}`}>
-                                {order.side === "long" ? "YES" : "NO"}
-                              </span>
-                            </td>
-                            <td className="py-4 px-4 font-mono text-xs">{order.size.toLocaleString()}</td>
-                            <td className="py-4 px-4 font-mono text-xs">${order.price.toFixed(4)}</td>
-                            <td className="py-4 px-4 font-mono text-xs">
-                              {order.filledSize > 0 ? `${order.filledSize.toLocaleString()} / ${order.size.toLocaleString()}` : "0"}
-                            </td>
-                            <td className="py-4 px-4 font-mono text-sm">
-                              <span className="text-yellow-500">{order.status.toUpperCase()}</span>
-                            </td>
-                            <td className="py-4 px-4">
-                              <Button
-                                onClick={() => handleCancelOrder(order.orderId || order.id)}
-                                disabled={cancelingOrderId === (order.orderId || order.id)}
-                                variant="outline"
-                                size="sm"
-                                className="text-xs"
-                              >
-                                {cancelingOrderId === (order.orderId || order.id) ? "Canceling..." : "Cancel"}
-                              </Button>
-                            </td>
+              {/* Leveraged Positions Tab */}
+              {positionsTab === "leveraged" && (
+                <>
+                  {loadingPositions ? (
+                    <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
+                  ) : positions.length === 0 ? (
+                    <p className="text-center py-8 text-muted-foreground">No leveraged positions found</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-zinc-800">
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Current</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Liquidation</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">P&L</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Margin</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Health</th>
+                            <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                        </thead>
+                        <tbody>
+                          {positions.map((pos) => {
+                            const pnl = calculatePnL(pos)
+                            const pnlAmount = pos.pnl ?? 0
+                            return (
+                              <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
+                                <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={pos.marketName}>
+                                  {pos.marketName}
+                                </td>
+                                <td className="py-4 px-4 font-mono text-sm">
+                                  <span className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}>
+                                    {pos.side.toUpperCase()}
+                                  </span>
+                                </td>
+                                <td className="py-4 px-4 font-mono text-xs">${pos.entryPrice.toFixed(4)}</td>
+                                <td className="py-4 px-4 font-mono text-xs">${pos.currentPrice.toFixed(4)}</td>
+                                <td className="py-4 px-4 font-mono text-xs text-red-400">${pos.liquidationPrice.toFixed(4)}</td>
+                                <td className="py-4 px-4 font-mono text-sm">
+                                  <div className="flex flex-col">
+                                    <span className={pnl >= 0 ? "text-primary" : "text-secondary"}>
+                                      {pnl >= 0 ? "+" : ""}
+                                      {pnl.toFixed(2)}%
+                                    </span>
+                                    <span className={`text-xs ${pnlAmount >= 0 ? "text-primary/70" : "text-secondary/70"}`}>
+                                      ${pnlAmount >= 0 ? "+" : ""}{pnlAmount.toFixed(2)}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-4 px-4 font-mono text-xs">
+                                  {pos.marginRatio !== undefined ? `${pos.marginRatio.toFixed(2)}%` : "N/A"}
+                                </td>
+                                <td className="py-4 px-4">
+                                  {getHealthBadge(pos.health)}
+                                </td>
+                                <td className="py-4 px-4">
+                                  {pos.status === "active" && (
+                                    <Button
+                                      onClick={() => handleClosePosition(pos.id)}
+                                      disabled={closingPositionId === pos.id}
+                                      variant="outline"
+                                      size="sm"
+                                      className="text-xs"
+                                    >
+                                      {closingPositionId === pos.id ? "Closing..." : "Close"}
+                                    </Button>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
               )}
 
-              {/* Filled Positions */}
-              {loadingPositions ? (
-                <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
-              ) : userPositions.length === 0 && pendingOrders.length === 0 ? (
-                <p className="text-center py-8 text-muted-foreground">No positions or orders found</p>
-              ) : userPositions.length > 0 ? (
-                <div>
-                  <h4 className="text-sm font-semibold mb-3 text-primary">Filled Positions ({userPositions.length})</h4>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-zinc-800">
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Size</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry Price</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {userPositions.map((pos: any) => (
-                          <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
-                            <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={pos.market}>
-                              {pos.market}
-                            </td>
-                            <td className="py-4 px-4 font-mono text-sm">
-                              <span className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}>
-                                {pos.side === "long" ? "YES" : "NO"}
-                              </span>
-                            </td>
-                            <td className="py-4 px-4 font-mono text-xs">{pos.size.toLocaleString()}</td>
-                            <td className="py-4 px-4 font-mono text-xs">${pos.price.toFixed(4)}</td>
-                            <td className="py-4 px-4 font-mono text-sm">
-                              <span className="text-primary">{pos.status.toUpperCase()}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : null}
+              {/* Polymarket Positions Tab */}
+              {positionsTab === "polymarket" && (
+                <>
+                  {/* Pending Orders */}
+                  {pendingOrders.length > 0 && (
+                    <div className="mb-6">
+                      <h4 className="text-sm font-semibold mb-3 text-yellow-500">Pending Orders ({pendingOrders.length})</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-zinc-800">
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Size</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Price</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Filled</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Status</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pendingOrders.map((order: any) => (
+                              <tr key={order.id} className="border-b border-zinc-800 hover:bg-accent/50">
+                                <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={order.market}>
+                                  {order.market}
+                                </td>
+                                <td className="py-4 px-4 font-mono text-sm">
+                                  <span className={`font-bold ${order.side === "long" ? "text-primary" : "text-secondary"}`}>
+                                    {order.side === "long" ? "YES" : "NO"}
+                                  </span>
+                                </td>
+                                <td className="py-4 px-4 font-mono text-xs">{order.size.toLocaleString()}</td>
+                                <td className="py-4 px-4 font-mono text-xs">${order.price.toFixed(4)}</td>
+                                <td className="py-4 px-4 font-mono text-xs">
+                                  {order.filledSize > 0 ? `${order.filledSize.toLocaleString()} / ${order.size.toLocaleString()}` : "0"}
+                                </td>
+                                <td className="py-4 px-4 font-mono text-sm">
+                                  <span className="text-yellow-500">{order.status.toUpperCase()}</span>
+                                </td>
+                                <td className="py-4 px-4">
+                                  <Button
+                                    onClick={() => handleCancelOrder(order.orderId || order.id)}
+                                    disabled={cancelingOrderId === (order.orderId || order.id)}
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs"
+                                  >
+                                    {cancelingOrderId === (order.orderId || order.id) ? "Canceling..." : "Cancel"}
+                                  </Button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Filled Positions */}
+                  {loadingPositions ? (
+                    <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
+                  ) : userPositions.length === 0 && pendingOrders.length === 0 ? (
+                    <p className="text-center py-8 text-muted-foreground">No positions or orders found</p>
+                  ) : userPositions.length > 0 ? (
+                    <div>
+                      <h4 className="text-sm font-semibold mb-3 text-primary">Filled Positions ({userPositions.length})</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-zinc-800">
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Size</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry Price</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {userPositions.map((pos: any) => (
+                              <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
+                                <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={pos.market}>
+                                  {pos.market}
+                                </td>
+                                <td className="py-4 px-4 font-mono text-sm">
+                                  <span className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}>
+                                    {pos.side === "long" ? "YES" : "NO"}
+                                  </span>
+                                </td>
+                                <td className="py-4 px-4 font-mono text-xs">{pos.size.toLocaleString()}</td>
+                                <td className="py-4 px-4 font-mono text-xs">${pos.price.toFixed(4)}</td>
+                                <td className="py-4 px-4 font-mono text-sm">
+                                  <span className="text-primary">{pos.status.toUpperCase()}</span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </Card>
           </>
         )}

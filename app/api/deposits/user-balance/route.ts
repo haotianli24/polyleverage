@@ -16,15 +16,24 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    const deposits = depositStore.getUserDeposits(address)
     const totalDepositsSOL = depositStore.getUserTotalDeposits(address)
     const totalDepositsUSDC = totalDepositsSOL * SOL_TO_USDC_RATE
+
+    console.log('User deposit balance requested:', {
+      address,
+      depositCount: deposits.length,
+      totalDepositsSOL,
+      totalDepositsUSDC,
+      deposits: deposits.map(d => ({ signature: d.signature, amount: d.amount }))
+    })
 
     return NextResponse.json({
       success: true,
       address,
       totalDepositsSOL,
       totalDepositsUSDC,
-      deposits: depositStore.getUserDeposits(address)
+      deposits
     })
 
   } catch (error) {
