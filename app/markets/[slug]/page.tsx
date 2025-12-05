@@ -128,7 +128,9 @@ export default function MarketDetailPage() {
           if (eventData.submarkets && eventData.submarkets.length > 0) {
             const firstSubmarket = eventData.submarkets[0]
             setSelectedSubmarket(firstSubmarket)
-            setMarketLimitPrice((firstSubmarket.yesPrice * 100).toFixed(1))
+            const priceInCents = (firstSubmarket.yesPrice * 100).toFixed(2)
+            console.log('Setting limit price from submarket:', { yesPrice: firstSubmarket.yesPrice, priceInCents })
+            setMarketLimitPrice(priceInCents)
             setSelectedPriceOption(firstSubmarket.yesPrice >= 0.5 ? "yes" : "no")
           }
           
@@ -172,7 +174,9 @@ export default function MarketDetailPage() {
         
         setIsEvent(false)
         setMarket(data)
-        setMarketLimitPrice((data.oraclePrice * 100).toFixed(1))
+        const priceInCents = (data.oraclePrice * 100).toFixed(2)
+        console.log('Setting limit price from market:', { oraclePrice: data.oraclePrice, priceInCents })
+        setMarketLimitPrice(priceInCents)
         const yesPrice = data.oraclePrice * 100
         const noPrice = (1 - data.oraclePrice) * 100
         setSelectedPriceOption(yesPrice >= noPrice ? "yes" : "no")
@@ -419,7 +423,9 @@ export default function MarketDetailPage() {
                   }`}
                   onClick={() => {
                     setSelectedSubmarket(submarket)
-                    setMarketLimitPrice((submarket.yesPrice * 100).toFixed(1))
+                    const priceInCents = (submarket.yesPrice * 100).toFixed(2)
+                    console.log('Setting limit price from submarket selection:', { yesPrice: submarket.yesPrice, priceInCents })
+                    setMarketLimitPrice(priceInCents)
                     setSelectedPriceOption(submarket.yesPrice >= 0.5 ? "yes" : "no")
                   }}
                 >
@@ -673,7 +679,9 @@ export default function MarketDetailPage() {
                     const price = isEvent && selectedSubmarket 
                       ? selectedSubmarket.yesPrice 
                       : market.oraclePrice
-                    setMarketLimitPrice((price * 100).toFixed(1))
+                    const priceInCents = (price * 100).toFixed(2)
+                    console.log('Setting YES price:', { price, priceInCents })
+                    setMarketLimitPrice(priceInCents)
                     setSelectedPriceOption("yes")
                   }}
                 >
@@ -693,7 +701,9 @@ export default function MarketDetailPage() {
                     const price = isEvent && selectedSubmarket 
                       ? selectedSubmarket.noPrice 
                       : (1 - market.oraclePrice)
-                    setMarketLimitPrice((price * 100).toFixed(1))
+                    const priceInCents = (price * 100).toFixed(2)
+                    console.log('Setting NO price:', { price, priceInCents })
+                    setMarketLimitPrice(priceInCents)
                     setSelectedPriceOption("no")
                   }}
                 >
@@ -770,25 +780,45 @@ export default function MarketDetailPage() {
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Position Size</span>
                   <span className="font-mono">
-                    ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0")).toFixed(2)}
+                    ${(() => {
+                      const priceInDollars = Number.parseFloat(marketLimitPrice || "0") / 100
+                      const shares = Number.parseInt(marketShares || "0")
+                      // Position size is collateral * leverage
+                      const collateral = priceInDollars * shares
+                      const positionSize = collateral * marketLeverage
+                      console.log('Position Size calc:', { collateral, marketLeverage, positionSize })
+                      return positionSize.toFixed(2)
+                    })()}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Collateral Required</span>
                   <span className="font-mono">
-                    ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0") / marketLeverage).toFixed(2)}
+                    ${(() => {
+                      const priceInDollars = Number.parseFloat(marketLimitPrice || "0") / 100
+                      const shares = Number.parseInt(marketShares || "0")
+                      // Collateral is what you need to put up (shares * price, no leverage division)
+                      const collateral = priceInDollars * shares
+                      console.log('Collateral calc:', { marketLimitPrice, priceInDollars, shares, collateral })
+                      return collateral.toFixed(2)
+                    })()}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">To Win</span>
                   <span className="font-mono text-primary">
-                    ${(Number.parseInt(marketShares || "0") * (1 - Number.parseFloat(marketLimitPrice || "0") / 100)).toFixed(2)}
+                    ${(() => {
+                      const shares = Number.parseInt(marketShares || "0")
+                      const effectiveShares = shares * marketLeverage
+                      const toWin = effectiveShares * (1 - Number.parseFloat(marketLimitPrice || "0") / 100)
+                      return toWin.toFixed(2)
+                    })()}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Liquidation Price</span>
                   <span className="font-mono text-red-400">
-                    {(Number.parseFloat(marketLimitPrice || "0") * (1 - 1/marketLeverage)).toFixed(1)}¢
+                    {(Number.parseFloat(marketLimitPrice || "0") * (1 - 1/marketLeverage)).toFixed(2)}¢
                   </span>
                 </div>
               </div>
@@ -803,7 +833,9 @@ export default function MarketDetailPage() {
 
                     const shares = Number.parseInt(marketShares)
                     const limitPrice = Number.parseFloat(marketLimitPrice || "0") / 100
-                    const collateralAmount = (limitPrice * shares) / marketLeverage
+                    // Collateral is what you put up (shares * price)
+                    // Leverage multiplies your position size, not reduces your collateral
+                    const collateralAmount = limitPrice * shares
 
                     if (shares <= 0 || collateralAmount <= 0) {
                       toast({

@@ -11,7 +11,7 @@ export interface DepositResult {
 export class SolanaDepositService {
   private connection: Connection
 
-  constructor(rpcUrl: string = 'https://api.mainnet-beta.solana.com') {
+  constructor(rpcUrl: string = 'https://api.devnet.solana.com') {
     this.connection = new Connection(rpcUrl, 'confirmed')
   }
 
@@ -52,17 +52,22 @@ export class SolanaDepositService {
       const userPubkey = new PublicKey(userAddress)
 
       // Check if transaction involves the deposit address
-      const accountKeys = tx.transaction.message.accountKeys.map(key => key.toString())
-      const hasDepositAddress = accountKeys.includes(depositPubkey.toString())
-      const hasUserAddress = accountKeys.includes(userPubkey.toString())
+      // Handle both versioned and legacy transactions
+      const accountKeys = tx.transaction.message.getAccountKeys 
+        ? tx.transaction.message.getAccountKeys().keySegments().flat()
+        : (tx.transaction.message as any).accountKeys
+      
+      const accountKeyStrings = accountKeys.map((key: PublicKey) => key.toString())
+      const hasDepositAddress = accountKeyStrings.includes(depositPubkey.toString())
+      const hasUserAddress = accountKeyStrings.includes(userPubkey.toString())
 
       if (!hasDepositAddress || !hasUserAddress) {
         throw new Error('Transaction does not involve the deposit address or user address')
       }
 
       // Find the deposit address index in the transaction
-      const depositIndex = accountKeys.findIndex(key => key === depositPubkey.toString())
-      const userIndex = accountKeys.findIndex(key => key === userPubkey.toString())
+      const depositIndex = accountKeyStrings.findIndex((key: string) => key === depositPubkey.toString())
+      const userIndex = accountKeyStrings.findIndex((key: string) => key === userPubkey.toString())
 
       if (depositIndex === -1 || userIndex === -1) {
         throw new Error('Could not find deposit or user address in transaction')

@@ -8,7 +8,7 @@
 const { Connection, PublicKey } = require('@solana/web3.js')
 
 const DEPOSIT_ADDRESS = 'CXi538rhqgJx56Edrqg1HMmZK4xfKgTDz7r2df4CnJQL'
-const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'
+const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com'
 
 async function checkBalance() {
   try {
@@ -16,7 +16,7 @@ async function checkBalance() {
     const publicKey = new PublicKey(DEPOSIT_ADDRESS)
     
     console.log('Checking balance for deposit address:', DEPOSIT_ADDRESS)
-    console.log('Network:', RPC_URL.includes('devnet') ? 'Devnet' : RPC_URL.includes('mainnet') ? 'Mainnet' : 'Custom')
+    console.log('Network:', RPC_URL.includes('devnet') ? 'Devnet' : RPC_URL.includes('testnet') ? 'Testnet' : RPC_URL.includes('mainnet') ? 'Mainnet' : 'Custom')
     console.log('')
     
     const balance = await connection.getBalance(publicKey)

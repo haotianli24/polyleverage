@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
       address,
       balance,
       balanceSOL: balance,
-      network: 'mainnet-beta'
+      network: 'devnet'
     })
 
   } catch (error) {

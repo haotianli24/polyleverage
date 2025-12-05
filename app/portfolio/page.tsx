@@ -192,13 +192,17 @@ export default function PortfolioPage() {
 
     setLoadingBalance(true)
     try {
-      const response = await fetch(`/api/deposits/balance?address=${publicKey.toString()}`)
-      if (response.ok) {
-        const data = await response.json()
-        setSolBalance(data.balance || 0)
-      }
+      // Fetch balance directly from the wallet connection
+      const balance = await connection.getBalance(publicKey)
+      setSolBalance(balance / LAMPORTS_PER_SOL)
+      console.log('Fetched SOL balance:', balance / LAMPORTS_PER_SOL, 'SOL')
     } catch (error) {
       console.error('Error fetching SOL balance:', error)
+      toast({
+        title: "Error Fetching Balance",
+        description: "Failed to fetch wallet balance. Please check your connection.",
+        variant: "destructive",
+      })
     } finally {
       setLoadingBalance(false)
     }

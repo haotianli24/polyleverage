@@ -57,4 +57,3 @@ class DepositStore {
 }
 
 export const depositStore = new DepositStore()
-
