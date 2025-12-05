@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
-import { Home, TrendingUp, Wallet, Coins, Menu, X, Zap, ArrowDownUp } from "lucide-react"
+import { Home, TrendingUp, Wallet, Coins, Menu, X, Zap, ArrowDownUp, ChevronLeft, Link2, Bookmark } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
@@ -26,14 +26,24 @@ interface Market {
 
 interface Position {
   id: string
-  market: string
+  marketId: string
+  marketName: string
   side: "long" | "short"
   entryPrice: number
   currentPrice: number
   collateral: number
   leverage: number
   liquidationPrice: number
-  status: "active" | "liquidated"
+  maintenanceMargin: number | null
+  userAddress: string
+  createdAt: string
+  status: "active" | "liquidated" | "closed"
+  // Enriched fields from API
+  marginRatio?: number
+  health?: "healthy" | "warning" | "danger"
+  pnl?: number
+  pnlPercentage?: number
+  positionSize?: number
 }
 
 
@@ -53,6 +63,8 @@ export default function PolyLeverage() {
   const [analyzingMarket, setAnalyzingMarket] = useState(false)
   const [userPositions, setUserPositions] = useState<any[]>([])
   const [loadingPositions, setLoadingPositions] = useState(false)
+  const [creatingPosition, setCreatingPosition] = useState(false)
+  const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
   const [depositAmount, setDepositAmount] = useState("")
   const [bridging, setBridging] = useState(false)
   const [bridgeQuote, setBridgeQuote] = useState<any>(null)
@@ -79,6 +91,12 @@ export default function PolyLeverage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [walletBalance, setWalletBalance] = useState(0)
   const [pnlTimeframe, setPnlTimeframe] = useState<"24h" | "7d" | "30d">("24h")
+  const [selectedMarketView, setSelectedMarketView] = useState<Market | null>(null)
+  const [marketLeverage, setMarketLeverage] = useState(2)
+  const [marketSide, setMarketSide] = useState<"buy" | "sell">("buy")
+  const [marketShares, setMarketShares] = useState("")
+  const [marketLimitPrice, setMarketLimitPrice] = useState("")
+  const [selectedPriceOption, setSelectedPriceOption] = useState<"yes" | "no" | null>(null)
   const [dateJoined] = useState(() => {
     // Generate a random join date between 30-365 days ago
     const daysAgo = Math.floor(Math.random() * 335) + 30
@@ -86,6 +104,10 @@ export default function PolyLeverage() {
     date.setDate(date.getDate() - daysAgo)
     return date
   })
+  
+  // Polymarket address for executing trades
+  const polymarketAddress = "0x2C7492fb6caDA189bb20f72cFe29520E07508683"
+  
   const { toast } = useToast()
 
   // Deterministic PnL data generation using a seed
@@ -148,6 +170,42 @@ export default function PolyLeverage() {
   // Memoize PnL data to prevent regeneration on re-render
   const pnlData = useMemo(() => generatePnLData(pnlTimeframe), [pnlTimeframe])
 
+  // Generate market price history data (deterministic)
+  const generateMarketPriceData = useMemo(() => {
+    if (!selectedMarketView) return []
+    const data = []
+    const now = new Date()
+    const baseYesPrice = selectedMarketView.oraclePrice
+    
+    // Use market ID as seed for deterministic generation
+    const seed = selectedMarketView.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+    let seedValue = seed
+    
+    const seededRandom = () => {
+      seedValue = (seedValue * 9301 + 49297) % 233280
+      return seedValue / 233280
+    }
+    
+    for (let i = 23; i >= 0; i--) {
+      const date = new Date(now)
+      date.setHours(date.getHours() - i)
+      const hours = date.getHours()
+      const minutes = date.getMinutes()
+      
+      // Generate deterministic price movement
+      const variation = (Math.sin(i / 3) * 0.1) + (seededRandom() - 0.5) * 0.05
+      const yesPrice = Math.max(0.1, Math.min(0.9, baseYesPrice + variation))
+      
+      data.push({
+        time: `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`,
+        yes: yesPrice * 100,
+        no: (1 - yesPrice) * 100,
+      })
+    }
+    
+    return data
+  }, [selectedMarketView])
+
   const handleAnalyzeMarket = async () => {
     if (!polymarketUrl.trim()) {
       toast({
@@ -204,43 +262,249 @@ export default function PolyLeverage() {
     }
   }
 
-  const handlePlacePosition = () => {
-    const positionSize = Number.parseFloat(collateral) * leverage
-    const liquidationPrice = (Number.parseFloat(collateral) / positionSize) * 0.95
-
-    const newPosition: Position = {
-      id: Math.random().toString(),
-      market: selectedMarket?.name || "Unknown",
-      side: selectedTab,
-      entryPrice: selectedMarket?.oraclePrice || 0.5,
-      currentPrice: oraclePrice,
-      collateral: Number.parseFloat(collateral),
-      leverage,
-      liquidationPrice,
-      status: "active",
+  const handlePlacePosition = async () => {
+    if (!connected || !publicKey) {
+      toast({
+        title: "Wallet Not Connected",
+        description: "Please connect your Solana wallet first",
+        variant: "destructive",
+      })
+      return
     }
 
-    setPositions([...positions, newPosition])
-    toast({
-      title: "Position Opened",
-      description: `${selectedTab.toUpperCase()} position created at $${newPosition.entryPrice.toFixed(2)}`,
-    })
+    if (!selectedMarket) {
+      toast({
+        title: "No Market Selected",
+        description: "Please analyze a market first",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const collateralAmount = Number.parseFloat(collateral)
+    if (isNaN(collateralAmount) || collateralAmount <= 0) {
+      toast({
+        title: "Invalid Collateral",
+        description: "Please enter a valid collateral amount",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setCreatingPosition(true)
+    try {
+      const response = await fetch('/api/positions/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          marketId: selectedMarket.id,
+          marketName: selectedMarket.name,
+          side: selectedTab,
+          entryPrice: oraclePrice,
+          collateral: collateralAmount,
+          leverage,
+          maintenanceMargin: null, // Optional, using default
+          userAddress: publicKey.toString(),
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to create position')
+      }
+
+      const data = await response.json()
+      toast({
+        title: "Position Opened",
+        description: data.message || `${selectedTab.toUpperCase()} position created at $${data.position.entryPrice.toFixed(2)}`,
+      })
+
+      // Refresh positions list
+      await fetchLeveragedPositions()
+      
+      // Reset form
+      setCollateral("1000")
+      setLeverage(2)
+    } catch (error) {
+      console.error('Error creating position:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to create position",
+        variant: "destructive",
+      })
+    } finally {
+      setCreatingPosition(false)
+    }
   }
 
   const calculatePnL = (position: Position) => {
+    // Use enriched PnL if available, otherwise calculate
+    if (position.pnlPercentage !== undefined) {
+      return position.pnlPercentage
+    }
     if (position.side === "long") {
       return ((position.currentPrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage
     }
     return ((position.entryPrice - position.currentPrice) / position.entryPrice) * 100 * position.leverage
   }
 
+  const getHealthColor = (health?: "healthy" | "warning" | "danger") => {
+    if (!health) return "text-muted-foreground"
+    switch (health) {
+      case "healthy":
+        return "text-primary"
+      case "warning":
+        return "text-yellow-500"
+      case "danger":
+        return "text-red-500"
+      default:
+        return "text-muted-foreground"
+    }
+  }
+
+  const getHealthBadge = (health?: "healthy" | "warning" | "danger") => {
+    if (!health) return null
+    const colors = {
+      healthy: "bg-green-500/20 text-green-500 border-green-500/30",
+      warning: "bg-yellow-500/20 text-yellow-500 border-yellow-500/30",
+      danger: "bg-red-500/20 text-red-500 border-red-500/30",
+    }
+    return (
+      <span className={`px-2 py-1 rounded text-xs font-mono border ${colors[health]}`}>
+        {health.toUpperCase()}
+      </span>
+    )
+  }
+
+  // Set initial price option based on which is higher
+  useEffect(() => {
+    if (selectedMarketView) {
+      const yesPrice = selectedMarketView.oraclePrice * 100
+      const noPrice = (1 - selectedMarketView.oraclePrice) * 100
+      setSelectedPriceOption(yesPrice >= noPrice ? "yes" : "no")
+    } else {
+      setSelectedPriceOption(null)
+    }
+  }, [selectedMarketView])
+
   useEffect(() => {
     if (currentPage === "markets") {
       fetchMarkets()
+      // Fetch positions when viewing markets if wallet is connected
+      if (connected && publicKey) {
+        fetchLeveragedPositions()
+      }
     } else if (currentPage === "portfolio" && connected && publicKey) {
       fetchUserPositions()
+      fetchLeveragedPositions()
+    } else if (currentPage === "dashboard" && connected && publicKey) {
+      fetchLeveragedPositions()
     }
   }, [currentPage, connected, publicKey])
+
+  // Fetch positions when a market is selected
+  useEffect(() => {
+    if (selectedMarketView && connected && publicKey) {
+      fetchLeveragedPositions()
+    }
+  }, [selectedMarketView, connected, publicKey])
+
+  // Fetch leveraged positions from backend
+  const fetchLeveragedPositions = async () => {
+    if (!publicKey) return
+
+    setLoadingPositions(true)
+    try {
+      const response = await fetch(`/api/positions/list?userAddress=${encodeURIComponent(publicKey.toString())}`)
+      if (response.ok) {
+        const data = await response.json()
+        setPositions(data.positions || [])
+      } else {
+        const errorData = await response.json()
+        console.error('Failed to fetch positions:', errorData.error)
+      }
+    } catch (error) {
+      console.error('Error fetching positions:', error)
+    } finally {
+      setLoadingPositions(false)
+    }
+  }
+
+  // Close a position
+  const handleClosePosition = async (positionId: string) => {
+    if (!connected || !publicKey) {
+      toast({
+        title: "Wallet Not Connected",
+        description: "Please connect your wallet first",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setClosingPositionId(positionId)
+    try {
+      const response = await fetch('/api/positions/close', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          positionId,
+          userAddress: publicKey.toString(),
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to close position')
+      }
+
+      const data = await response.json()
+      toast({
+        title: "Position Closed",
+        description: data.message || `Position closed. Final balance: $${data.finalBalance.toFixed(2)}`,
+      })
+
+      // Refresh positions list
+      await fetchLeveragedPositions()
+    } catch (error) {
+      console.error('Error closing position:', error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to close position",
+        variant: "destructive",
+      })
+    } finally {
+      setClosingPositionId(null)
+    }
+  }
+
+  // Update price for positions when oracle price changes
+  const updatePositionPrices = async (marketId: string, newPrice: number) => {
+    try {
+      const response = await fetch('/api/positions/update-price', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          marketId,
+          newPrice,
+        }),
+      })
+
+      if (response.ok) {
+        // Refresh positions to get updated prices
+        if (publicKey) {
+          await fetchLeveragedPositions()
+        }
+      }
+    } catch (error) {
+      console.error('Error updating position prices:', error)
+    }
+  }
 
   useEffect(() => {
     if (depositAmount && parseFloat(depositAmount) > 0) {
@@ -429,7 +693,7 @@ export default function PolyLeverage() {
             </h2>
           </div>
           <div className="wallet-button-wrapper">
-            <WalletMultiButton>{!connected ? "Connect Wallet" : undefined}</WalletMultiButton>
+            <WalletMultiButton />
           </div>
         </div>
 
@@ -567,21 +831,36 @@ export default function PolyLeverage() {
 
                     <Button
                       onClick={handlePlacePosition}
+                      disabled={creatingPosition || !connected}
                       className={`w-full h-12 font-semibold ${selectedTab === "long"
                         ? "bg-primary hover:bg-primary/90 text-primary-foreground"
                         : "bg-secondary hover:bg-secondary/90 text-secondary-foreground"
                         }`}
                     >
-                      Open Position
+                      {creatingPosition ? "Creating..." : !connected ? "Connect Wallet" : "Open Position"}
                     </Button>
                   </Card>
                 </div>
               )}
 
               {/* Positions Table */}
-              {positions.length > 0 && (
+              {loadingPositions ? (
                 <Card className="bg-card border-zinc-800 p-6">
-                  <h3 className="text-lg font-bold mb-4">Active Positions</h3>
+                  <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
+                </Card>
+              ) : positions.length > 0 ? (
+                <Card className="bg-card border-zinc-800 p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-bold">Active Positions</h3>
+                    <Button
+                      onClick={fetchLeveragedPositions}
+                      disabled={loadingPositions}
+                      variant="outline"
+                      size="sm"
+                    >
+                      Refresh
+                    </Button>
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -590,16 +869,22 @@ export default function PolyLeverage() {
                           <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
                           <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry</th>
                           <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Current</th>
+                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Liquidation</th>
                           <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">P&L</th>
-                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Status</th>
+                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Margin</th>
+                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Health</th>
+                          <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {positions.map((pos) => {
                           const pnl = calculatePnL(pos)
+                          const pnlAmount = pos.pnl ?? 0
                           return (
                             <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
-                              <td className="py-4 px-4 font-mono text-xs truncate">{pos.market}</td>
+                              <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={pos.marketName}>
+                                {pos.marketName}
+                              </td>
                               <td className="py-4 px-4 font-mono text-sm">
                                 <span
                                   className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}
@@ -607,18 +892,38 @@ export default function PolyLeverage() {
                                   {pos.side.toUpperCase()}
                                 </span>
                               </td>
-                              <td className="py-4 px-4 font-mono text-xs">${pos.entryPrice.toFixed(2)}</td>
-                              <td className="py-4 px-4 font-mono text-xs">${pos.currentPrice.toFixed(2)}</td>
+                              <td className="py-4 px-4 font-mono text-xs">${pos.entryPrice.toFixed(4)}</td>
+                              <td className="py-4 px-4 font-mono text-xs">${pos.currentPrice.toFixed(4)}</td>
+                              <td className="py-4 px-4 font-mono text-xs text-red-400">${pos.liquidationPrice.toFixed(4)}</td>
                               <td className="py-4 px-4 font-mono text-sm">
-                                <span className={pnl >= 0 ? "text-primary" : "text-secondary"}>
-                                  {pnl >= 0 ? "+" : ""}
-                                  {pnl.toFixed(2)}%
-                                </span>
+                                <div className="flex flex-col">
+                                  <span className={pnl >= 0 ? "text-primary" : "text-secondary"}>
+                                    {pnl >= 0 ? "+" : ""}
+                                    {pnl.toFixed(2)}%
+                                  </span>
+                                  <span className={`text-xs ${pnlAmount >= 0 ? "text-primary/70" : "text-secondary/70"}`}>
+                                    ${pnlAmount >= 0 ? "+" : ""}{pnlAmount.toFixed(2)}
+                                  </span>
+                                </div>
                               </td>
-                              <td className="py-4 px-4 font-mono text-sm">
-                                <span className={pos.status === "active" ? "text-primary" : "text-secondary"}>
-                                  {pos.status.toUpperCase()}
-                                </span>
+                              <td className="py-4 px-4 font-mono text-xs">
+                                {pos.marginRatio !== undefined ? `${pos.marginRatio.toFixed(2)}%` : "N/A"}
+                              </td>
+                              <td className="py-4 px-4">
+                                {getHealthBadge(pos.health)}
+                              </td>
+                              <td className="py-4 px-4">
+                                {pos.status === "active" && (
+                                  <Button
+                                    onClick={() => handleClosePosition(pos.id)}
+                                    disabled={closingPositionId === pos.id}
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs"
+                                  >
+                                    {closingPositionId === pos.id ? "Closing..." : "Close"}
+                                  </Button>
+                                )}
                               </td>
                             </tr>
                           )
@@ -627,7 +932,11 @@ export default function PolyLeverage() {
                     </table>
                   </div>
                 </Card>
-              )}
+              ) : connected ? (
+                <Card className="bg-card border-zinc-800 p-6">
+                  <p className="text-center py-8 text-muted-foreground">No active positions</p>
+                </Card>
+              ) : null}
 
               {/* God Mode */}
               {selectedMarket && (
@@ -655,7 +964,14 @@ export default function PolyLeverage() {
                       max="1"
                       step="0.01"
                       value={oraclePrice}
-                      onChange={(e) => setOraclePrice(Number.parseFloat(e.target.value))}
+                      onChange={async (e) => {
+                        const newPrice = Number.parseFloat(e.target.value)
+                        setOraclePrice(newPrice)
+                        // Update position prices if market is selected
+                        if (selectedMarket?.id) {
+                          await updatePositionPrices(selectedMarket.id, newPrice)
+                        }
+                      }}
                       className="w-full h-2 bg-accent rounded accent-primary"
                     />
                     <p className="text-xs text-muted-foreground">Original: ${(selectedMarket.oraclePrice || 0.5).toFixed(2)}</p>
@@ -667,69 +983,516 @@ export default function PolyLeverage() {
 
           {currentPage === "markets" && (
             <div className="space-y-6">
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
-                  <Input
-                    placeholder="Search markets..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="bg-card border-zinc-800"
-                  />
-                </div>
-                <Button
-                  onClick={fetchMarkets}
-                  disabled={loadingMarkets}
-                  variant="outline"
-                  size="icon"
-                >
-                  <ArrowDownUp className="w-4 h-4" />
-                </Button>
-              </div>
-              {loadingMarkets && markets.length === 0 ? (
-                <div className="text-center py-12">
-                  <p className="text-muted-foreground">Loading markets...</p>
-                </div>
-              ) : markets.length === 0 ? (
-                <div className="text-center py-12">
-                  <p className="text-muted-foreground">No markets available</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {markets
-                    .filter(market =>
-                      market.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                      (market.description && market.description.toLowerCase().includes(searchQuery.toLowerCase()))
-                    )
-                    .map((market) => (
-                      <Card
-                        key={market.id}
-                        className="bg-card border-zinc-800 p-4 cursor-pointer hover:border-primary/50 transition-colors"
-                        onClick={() => {
-                          setSelectedMarket(market)
-                          setCurrentPage("dashboard")
-                        }}
+              {selectedMarketView ? (
+                // Detailed Market View (Polymarket-style)
+                <div className="space-y-6">
+                  {/* Header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setSelectedMarketView(null)}
+                        className="hover:bg-accent"
                       >
-                        <p className="font-semibold text-sm mb-3">{market.name}</p>
-                        <div className="space-y-2 text-xs">
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Liquidity</span>
-                            <span className="font-mono text-primary">{market.liquidity || 0}</span>
+                        <ChevronLeft className="w-5 h-5" />
+                      </Button>
+                      <div>
+                        <h2 className="text-xl font-bold">{selectedMarketView.name}</h2>
+                        <p className="text-sm text-muted-foreground">
+                          ${(selectedMarketView.volume || 0).toLocaleString()} Vol.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="ghost" size="icon" className="hover:bg-accent">
+                        <Link2 className="w-4 h-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="hover:bg-accent">
+                        <Bookmark className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Main Content: Graph + Trading Panel */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Left: Graph */}
+                    <div className="lg:col-span-2">
+                      <Card className="bg-card border-zinc-800 p-6">
+                        <div className="mb-4">
+                          <div className="flex items-center gap-4 mb-4">
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded-full bg-primary"></div>
+                              <span className="text-sm">Yes {(selectedMarketView.oraclePrice * 100).toFixed(1)}%</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded-full bg-secondary"></div>
+                              <span className="text-sm">No {((1 - selectedMarketView.oraclePrice) * 100).toFixed(1)}%</span>
+                            </div>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Price</span>
-                            <span className="font-mono">${(market.oraclePrice || 0).toFixed(2)}</span>
+                          <div className="flex gap-2">
+                            {["1H", "6H", "1D", "1W", "1M", "ALL"].map((period) => (
+                              <Button
+                                key={period}
+                                variant={period === "ALL" ? "default" : "outline"}
+                                size="sm"
+                                className="text-xs"
+                              >
+                                {period}
+                              </Button>
+                            ))}
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">24h Change</span>
-                            <span className={`font-mono ${(market.change24h || 0) >= 0 ? "text-primary" : "text-secondary"}`}>
-                              {(market.change24h || 0) >= 0 ? "+" : ""}
-                              {(market.change24h || 0).toFixed(2)}%
+                        </div>
+                        <div className="h-[400px]">
+                          <ChartContainer
+                            config={{
+                              yes: {
+                                label: "Yes",
+                                color: "#8b5cf6",
+                              },
+                              no: {
+                                label: "No",
+                                color: "#ef4444",
+                              },
+                            }}
+                            className="h-full w-full"
+                          >
+                            <LineChart 
+                              data={generateMarketPriceData}
+                              margin={{ top: 10, right: 15, bottom: 10, left: 15 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" opacity={0.3} />
+                              <XAxis
+                                dataKey="time"
+                                tick={{ fill: "#e2e8f0", fontSize: 10 }}
+                                tickLine={{ stroke: "#e2e8f0" }}
+                                axisLine={{ stroke: "#e2e8f0", strokeWidth: 1 }}
+                              />
+                              <YAxis
+                                tick={{ fill: "#e2e8f0", fontSize: 10 }}
+                                tickLine={{ stroke: "#e2e8f0" }}
+                                axisLine={{ stroke: "#e2e8f0", strokeWidth: 1 }}
+                                domain={[0, 100]}
+                                tickFormatter={(value) => `${value}%`}
+                                width={50}
+                              />
+                              <ChartTooltip 
+                                content={<ChartTooltipContent />}
+                                contentStyle={{ 
+                                  backgroundColor: "hsl(var(--card))", 
+                                  border: "1px solid hsl(var(--border))",
+                                  borderRadius: "0.5rem"
+                                }}
+                              />
+                              <Line
+                                type="monotone"
+                                dataKey="yes"
+                                stroke="#8b5cf6"
+                                strokeWidth={2}
+                                dot={false}
+                              />
+                              <Line
+                                type="monotone"
+                                dataKey="no"
+                                stroke="#ef4444"
+                                strokeWidth={2}
+                                dot={false}
+                              />
+                            </LineChart>
+                          </ChartContainer>
+                        </div>
+                      </Card>
+                    </div>
+
+                    {/* Right: Trading Panel */}
+                    <div className="lg:col-span-1">
+                      <Card className="bg-card border-zinc-800 p-6 sticky top-6">
+                        <div className="mb-4">
+                          <Tabs value={marketSide} onValueChange={(v) => setMarketSide(v as "buy" | "sell")}>
+                            <TabsList className="grid w-full grid-cols-2 bg-accent border-zinc-800">
+                              <TabsTrigger value="buy" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                                Buy
+                              </TabsTrigger>
+                              <TabsTrigger value="sell" className="data-[state=active]:bg-secondary data-[state=active]:text-secondary-foreground">
+                                Sell
+                              </TabsTrigger>
+                            </TabsList>
+                          </Tabs>
+                        </div>
+
+                        {/* Leverage Control */}
+                        <div className="mb-4 p-3 bg-accent border border-zinc-800 rounded-lg">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs text-muted-foreground">Leverage</span>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                onClick={() => setMarketLeverage(Math.max(1, marketLeverage - 1))}
+                              >
+                                -
+                              </Button>
+                              <span className="font-mono font-bold text-sm min-w-[3ch] text-center">{marketLeverage}x</span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                onClick={() => setMarketLeverage(Math.min(20, marketLeverage + 1))}
+                              >
+                                +
+                              </Button>
+                            </div>
+                          </div>
+                          <input
+                            type="range"
+                            min="1"
+                            max="20"
+                            step="1"
+                            value={marketLeverage}
+                            onChange={(e) => setMarketLeverage(Number.parseInt(e.target.value))}
+                            className="w-full h-1 bg-zinc-800 rounded accent-primary"
+                          />
+                          <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                            <span>1x</span>
+                            <span>20x</span>
+                          </div>
+                        </div>
+
+                        {/* Price Buttons */}
+                        <div className="space-y-2 mb-4">
+                          <Button
+                            className={`w-full h-14 text-lg font-semibold ${
+                              selectedPriceOption === "yes"
+                                ? "bg-green-600 hover:bg-green-700 text-white"
+                                : marketSide === "buy"
+                                ? "bg-secondary hover:bg-secondary/90 text-black"
+                                : "bg-accent hover:bg-accent/80 text-foreground"
+                            }`}
+                            onClick={() => {
+                              setMarketLimitPrice((selectedMarketView.oraclePrice * 100).toFixed(1))
+                              setSelectedPriceOption("yes")
+                            }}
+                          >
+                            Yes {(selectedMarketView.oraclePrice * 100).toFixed(1)}¢
+                          </Button>
+                          <Button
+                            className={`w-full h-14 text-lg font-semibold ${
+                              selectedPriceOption === "no"
+                                ? "bg-red-600 hover:bg-red-700 text-white"
+                                : marketSide === "sell"
+                                ? "bg-secondary hover:bg-secondary/90 text-secondary-foreground"
+                                : "bg-accent hover:bg-accent/80 text-foreground"
+                            }`}
+                            onClick={() => {
+                              setMarketLimitPrice(((1 - selectedMarketView.oraclePrice) * 100).toFixed(1))
+                              setSelectedPriceOption("no")
+                            }}
+                          >
+                            No {((1 - selectedMarketView.oraclePrice) * 100).toFixed(1)}¢
+                          </Button>
+                        </div>
+
+                        {/* Limit Price */}
+                        <div className="mb-4">
+                          <label className="text-xs text-muted-foreground mb-2 block">Limit Price</label>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              placeholder="0.0"
+                              value={marketLimitPrice}
+                              onChange={(e) => setMarketLimitPrice(e.target.value)}
+                              className="bg-accent border-zinc-700 font-mono"
+                            />
+                            <span className="text-xs text-muted-foreground">¢</span>
+                          </div>
+                        </div>
+
+                        {/* Shares */}
+                        <div className="mb-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <label className="text-xs text-muted-foreground">Shares</label>
+                            <Button variant="link" size="sm" className="text-xs h-auto p-0">
+                              Max
+                            </Button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setMarketShares(Math.max(0, Number.parseInt(marketShares || "0") - 100).toString())}
+                            >
+                              -100
+                            </Button>
+                            <Input
+                              type="number"
+                              placeholder="0"
+                              value={marketShares}
+                              onChange={(e) => setMarketShares(e.target.value)}
+                              className="bg-accent border-zinc-700 font-mono text-center"
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setMarketShares((Number.parseInt(marketShares || "0") + 100).toString())}
+                            >
+                              +100
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Order Summary */}
+                        <div className="mb-4 p-3 bg-accent border border-zinc-800 rounded-lg space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Total</span>
+                            <span className="font-mono">
+                              ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0") * marketLeverage).toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">To Win</span>
+                            <span className="font-mono text-primary">
+                              ${((Number.parseFloat(marketLimitPrice || "0") / 100) * Number.parseInt(marketShares || "0") * marketLeverage).toFixed(2)}
                             </span>
                           </div>
                         </div>
+
+                        {/* Action Button */}
+                        <Button
+                          className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold"
+                          disabled={!connected || !marketShares || Number.parseInt(marketShares) <= 0 || creatingPosition}
+                          onClick={async () => {
+                            if (!connected || !publicKey || !selectedMarketView) return
+
+                            const shares = Number.parseInt(marketShares)
+                            const limitPrice = Number.parseFloat(marketLimitPrice || "0") / 100 // Convert cents to decimal
+                            const collateralAmount = (limitPrice * shares) / marketLeverage
+
+                            if (shares <= 0 || collateralAmount <= 0) {
+                              toast({
+                                title: "Invalid Order",
+                                description: "Please enter valid shares and price",
+                                variant: "destructive",
+                              })
+                              return
+                            }
+
+                            setCreatingPosition(true)
+                            try {
+                              const side = marketSide === "buy" ? "long" : "short"
+                              const response = await fetch('/api/positions/create', {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                  marketId: selectedMarketView.id,
+                                  marketName: selectedMarketView.name,
+                                  side,
+                                  entryPrice: limitPrice,
+                                  collateral: collateralAmount,
+                                  leverage: marketLeverage,
+                                  maintenanceMargin: null,
+                                  userAddress: publicKey.toString(),
+                                }),
+                              })
+
+                              if (!response.ok) {
+                                const errorData = await response.json()
+                                throw new Error(errorData.error || 'Failed to create position')
+                              }
+
+                              const data = await response.json()
+                              toast({
+                                title: "Position Opened",
+                                description: data.message || `${side.toUpperCase()} position created`,
+                              })
+
+                              // Refresh positions list
+                              await fetchLeveragedPositions()
+
+                              setMarketShares("")
+                              setMarketLimitPrice("")
+                            } catch (error) {
+                              console.error('Error creating position:', error)
+                              toast({
+                                title: "Error",
+                                description: error instanceof Error ? error.message : "Failed to create position",
+                                variant: "destructive",
+                              })
+                            } finally {
+                              setCreatingPosition(false)
+                            }
+                          }}
+                        >
+                          {creatingPosition ? "Creating..." : !connected ? "Connect Wallet" : `${marketSide === "buy" ? "Buy" : "Sell"} Yes`}
+                        </Button>
                       </Card>
-                    ))}
+                    </div>
+                  </div>
+
+                  {/* My Positions Section */}
+                  {connected && publicKey && (() => {
+                    const marketPositions = positions.filter(pos => pos.marketId === selectedMarketView?.id)
+                    return (
+                      <Card className="bg-card border-zinc-800 p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-lg font-bold">My Positions</h3>
+                          <Button
+                            onClick={fetchLeveragedPositions}
+                            disabled={loadingPositions}
+                            variant="outline"
+                            size="sm"
+                          >
+                            Refresh
+                          </Button>
+                        </div>
+                        {loadingPositions ? (
+                          <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
+                        ) : marketPositions.length === 0 ? (
+                          <p className="text-center py-8 text-muted-foreground">No positions in this market</p>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="border-b border-zinc-800">
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Current</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Liquidation</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Collateral</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Leverage</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">P&L</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Margin</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Health</th>
+                                  <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {marketPositions.map((pos) => {
+                                  const pnl = calculatePnL(pos)
+                                  const pnlAmount = pos.pnl ?? 0
+                                  return (
+                                    <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
+                                      <td className="py-4 px-4 font-mono text-sm">
+                                        <span className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}>
+                                          {pos.side.toUpperCase()}
+                                        </span>
+                                      </td>
+                                      <td className="py-4 px-4 font-mono text-xs">${pos.entryPrice.toFixed(4)}</td>
+                                      <td className="py-4 px-4 font-mono text-xs">${pos.currentPrice.toFixed(4)}</td>
+                                      <td className="py-4 px-4 font-mono text-xs text-red-400">${pos.liquidationPrice.toFixed(4)}</td>
+                                      <td className="py-4 px-4 font-mono text-xs">${pos.collateral.toFixed(2)}</td>
+                                      <td className="py-4 px-4 font-mono text-xs">{pos.leverage}x</td>
+                                      <td className="py-4 px-4 font-mono text-sm">
+                                        <div className="flex flex-col">
+                                          <span className={pnl >= 0 ? "text-primary" : "text-secondary"}>
+                                            {pnl >= 0 ? "+" : ""}
+                                            {pnl.toFixed(2)}%
+                                          </span>
+                                          <span className={`text-xs ${pnlAmount >= 0 ? "text-primary/70" : "text-secondary/70"}`}>
+                                            ${pnlAmount >= 0 ? "+" : ""}{pnlAmount.toFixed(2)}
+                                          </span>
+                                        </div>
+                                      </td>
+                                      <td className="py-4 px-4 font-mono text-xs">
+                                        {pos.marginRatio !== undefined ? `${pos.marginRatio.toFixed(2)}%` : "N/A"}
+                                      </td>
+                                      <td className="py-4 px-4">
+                                        {getHealthBadge(pos.health)}
+                                      </td>
+                                      <td className="py-4 px-4">
+                                        {pos.status === "active" && (
+                                          <Button
+                                            onClick={() => handleClosePosition(pos.id)}
+                                            disabled={closingPositionId === pos.id}
+                                            variant="outline"
+                                            size="sm"
+                                            className="text-xs"
+                                          >
+                                            {closingPositionId === pos.id ? "Closing..." : "Close"}
+                                          </Button>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </Card>
+                    )
+                  })()}
                 </div>
+              ) : (
+                // Market List View
+                <>
+                  <div className="flex items-center gap-4">
+                    <div className="relative flex-1">
+                      <Input
+                        placeholder="Search markets..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="bg-card border-zinc-800"
+                      />
+                    </div>
+                    <Button
+                      onClick={fetchMarkets}
+                      disabled={loadingMarkets}
+                      variant="outline"
+                      size="icon"
+                    >
+                      <ArrowDownUp className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  {loadingMarkets && markets.length === 0 ? (
+                    <div className="text-center py-12">
+                      <p className="text-muted-foreground">Loading markets...</p>
+                    </div>
+                  ) : markets.length === 0 ? (
+                    <div className="text-center py-12">
+                      <p className="text-muted-foreground">No markets available</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {markets
+                        .filter(market =>
+                          market.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (market.description && market.description.toLowerCase().includes(searchQuery.toLowerCase()))
+                        )
+                        .map((market) => (
+                          <Card
+                            key={market.id}
+                            className="bg-card border-zinc-800 p-4 cursor-pointer hover:border-primary/50 transition-colors"
+                            onClick={() => {
+                              setSelectedMarketView(market)
+                              setMarketLimitPrice((market.oraclePrice * 100).toFixed(1))
+                            }}
+                          >
+                            <p className="font-semibold text-sm mb-3">{market.name}</p>
+                            <div className="space-y-2 text-xs">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Liquidity</span>
+                                <span className="font-mono text-primary">{market.liquidity || 0}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Price</span>
+                                <span className="font-mono">${(market.oraclePrice || 0).toFixed(2)}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">24h Change</span>
+                                <span className={`font-mono ${(market.change24h || 0) >= 0 ? "text-primary" : "text-secondary"}`}>
+                                  {(market.change24h || 0) >= 0 ? "+" : ""}
+                                  {(market.change24h || 0).toFixed(2)}%
+                                </span>
+                              </div>
+                            </div>
+                          </Card>
+                        ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -742,7 +1505,7 @@ export default function PolyLeverage() {
                   <h3 className="text-xl font-bold mb-2">Portfolio</h3>
                   <p className="text-muted-foreground mb-4">Connect your wallet to view your positions</p>
                   <div className="wallet-button-wrapper">
-                    <WalletMultiButton>{!connected ? "Connect Wallet" : undefined}</WalletMultiButton>
+                    <WalletMultiButton />
                   </div>
                 </div>
               ) : (
@@ -763,12 +1526,22 @@ export default function PolyLeverage() {
                           </p>
                         </div>
                       </div>
-                      <div className="pt-4 border-t border-zinc-800">
-                        <p className="text-xs text-muted-foreground mb-1">Wallet Balance</p>
-                        <p className="text-2xl font-bold font-mono">
-                          ${walletBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">USDC</p>
+                      <div className="pt-4 border-t border-zinc-800 grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-1">Wallet Balance</p>
+                          <p className="text-2xl font-bold font-mono">
+                            ${walletBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-1">USDC</p>
+                        </div>
+                        {polymarketAddress && (
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">Polymarket Address</p>
+                            <p className="font-mono text-sm break-all">
+                              {polymarketAddress}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </Card>
 
@@ -841,6 +1614,96 @@ export default function PolyLeverage() {
                     </Card>
                   </div>
 
+                  {/* Leveraged Positions */}
+                  <Card className="bg-card border-zinc-800 p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-bold">Leveraged Positions</h3>
+                      <Button
+                        onClick={fetchLeveragedPositions}
+                        disabled={loadingPositions}
+                        variant="outline"
+                        size="sm"
+                      >
+                        Refresh
+                      </Button>
+                    </div>
+                    {loadingPositions ? (
+                      <p className="text-center py-8 text-muted-foreground">Loading positions...</p>
+                    ) : positions.length === 0 ? (
+                      <p className="text-center py-8 text-muted-foreground">No leveraged positions found</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-zinc-800">
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Market</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Side</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Entry</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Current</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Liquidation</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">P&L</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Margin</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Health</th>
+                              <th className="text-left py-3 px-4 text-xs text-muted-foreground font-mono">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {positions.map((pos) => {
+                              const pnl = calculatePnL(pos)
+                              const pnlAmount = pos.pnl ?? 0
+                              return (
+                                <tr key={pos.id} className="border-b border-zinc-800 hover:bg-accent/50">
+                                  <td className="py-4 px-4 font-mono text-xs truncate max-w-[200px]" title={pos.marketName}>
+                                    {pos.marketName}
+                                  </td>
+                                  <td className="py-4 px-4 font-mono text-sm">
+                                    <span className={`font-bold ${pos.side === "long" ? "text-primary" : "text-secondary"}`}>
+                                      {pos.side.toUpperCase()}
+                                    </span>
+                                  </td>
+                                  <td className="py-4 px-4 font-mono text-xs">${pos.entryPrice.toFixed(4)}</td>
+                                  <td className="py-4 px-4 font-mono text-xs">${pos.currentPrice.toFixed(4)}</td>
+                                  <td className="py-4 px-4 font-mono text-xs text-red-400">${pos.liquidationPrice.toFixed(4)}</td>
+                                  <td className="py-4 px-4 font-mono text-sm">
+                                    <div className="flex flex-col">
+                                      <span className={pnl >= 0 ? "text-primary" : "text-secondary"}>
+                                        {pnl >= 0 ? "+" : ""}
+                                        {pnl.toFixed(2)}%
+                                      </span>
+                                      <span className={`text-xs ${pnlAmount >= 0 ? "text-primary/70" : "text-secondary/70"}`}>
+                                        ${pnlAmount >= 0 ? "+" : ""}{pnlAmount.toFixed(2)}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="py-4 px-4 font-mono text-xs">
+                                    {pos.marginRatio !== undefined ? `${pos.marginRatio.toFixed(2)}%` : "N/A"}
+                                  </td>
+                                  <td className="py-4 px-4">
+                                    {getHealthBadge(pos.health)}
+                                  </td>
+                                  <td className="py-4 px-4">
+                                    {pos.status === "active" && (
+                                      <Button
+                                        onClick={() => handleClosePosition(pos.id)}
+                                        disabled={closingPositionId === pos.id}
+                                        variant="outline"
+                                        size="sm"
+                                        className="text-xs"
+                                      >
+                                        {closingPositionId === pos.id ? "Closing..." : "Close"}
+                                      </Button>
+                                    )}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </Card>
+
+                  {/* Polymarket Positions (from Polymarket API) */}
                   <Card className="bg-card border-zinc-800 p-6">
                     <h3 className="text-lg font-bold mb-4">Polymarket Positions</h3>
                     {loadingPositions ? (
