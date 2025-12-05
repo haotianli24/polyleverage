@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { Home, TrendingUp, Wallet, Settings, Menu, X, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Card } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
@@ -158,7 +159,6 @@ export default function PolyLeverage() {
   }
 
   const navItems = [
-    { id: "dashboard", label: "Home", icon: Home },
     { id: "markets", label: "Markets", icon: TrendingUp },
     { id: "portfolio", label: "Portfolio", icon: Wallet },
     { id: "settings", label: "Settings", icon: Settings },
@@ -225,7 +225,7 @@ export default function PolyLeverage() {
               {currentPage === "settings" && "Settings"}
             </h2>
           </div>
-          <Button className="bg-primary hover:bg-primary/90 text-primary-foreground">Connect Wallet</Button>
+          <WalletMultiButton />
         </div>
 
         {/* Content Area */}
